@@ -303,3 +303,52 @@ three-way agreement and we have demonstrated two-way. The script prints
 
 **Keep / revert.** Keep. Re-run from `msaga-main` at any time to confirm the backbone
 still reproduces without our changes present (D-106).
+
+---
+
+## D-109 — Gate B needs a `GemmExecPlan`; settled by experiment, not by reading
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** adopted
+
+**The question.** Could `C = A @ B` be had for free? `AttentionValueExecPlan` contains
+no `load_reg_*` and no `update_reg`, so it never writes the stationary register — it
+multiplies whatever `reg` already holds by the streamed operand. In the attention kernel
+`reg` holds `P` only because `ATTN_SCORE` overwrote it. Issue `LOAD_STATIONARY(A)` then
+`ATTN_VALUE(B)` with no score step between, and `reg` should still hold `A`. If so, Gate
+B would collapse to Python tiling with zero RTL work.
+
+**The experiment.** `rpu/experiments/gate_b_probe.py`, run against the real Verilator
+RTL at `FSA4X4Fp16Config`. It issues exactly that two-instruction sequence on random
+fp16 matrices and compares the drained accumulator with numpy.
+
+**Result: no.** `max rel err 1.28`. The simulation completes cleanly
+(`*** PASSED ***`, `execTime=210`, `mxInst=2`) and the outputs are plausibly-scaled
+finite numbers — it computes *something*, just not `A @ B`.
+
+To rule out the boring explanation, the probe then checks all eight operand orders and
+transposes against both the raw accumulator tile and its transpose. **All sixteen
+combinations land at rel err 1.13 to 1.53**; the closest, `A.T @ B` against `C_t.T`, is
+still 1.126. So this is not a layout bug in the probe. The composite genuinely does not
+compute a general matrix product.
+
+**Leading hypothesis, not yet confirmed.** `AttentionValueExecPlan` asserts `acc_ui`,
+so `macUnit.io.in_c := io.u_input.bits` — each PE accumulates the value arriving from
+*above*. For the top row, `SystolicArray.scala` wires that input to the `CMP` unit's
+`d_output`. The comparator array is stateful and is primed by `ATTN_SCORE`'s
+`UPDATE` / `PROP_MAX` / `PROP_ZERO` command sequence. Run `ATTN_VALUE` without the score
+step and the addend streaming in from the top is stale comparator state rather than
+zero. That would explain finite-but-wrong output exactly. Confirming it means either a
+waveform or a probe that drives the comparators to a known state first; neither is
+needed to make the phase-2 decision.
+
+**Consequence.** `GemmExecPlan` is required, as `GATE_B_FEASIBILITY.md` predicted after
+its correction. Its shape is unchanged by this result: `AttentionScoreExecPlan`'s first
+four declarations for the streaming multiply, `AttentionValueExecPlan`'s
+`readAccRAM` + `ACC_SA` drain for the writeback, and a deliberate zero seed for the
+accumulate input rather than whatever the comparators hold.
+
+**Why this is recorded as a decision rather than a note.** It cost one experiment to
+convert a contested source reading into a fact, and the contest was real — this file's
+own feasibility note argued both sides before the probe settled it. The probe is kept
+and is cheap to re-run; if a future change makes the two-instruction sequence work, it
+will say so.

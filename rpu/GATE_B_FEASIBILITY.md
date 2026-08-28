@@ -180,6 +180,15 @@ that `ATTN_VALUE`'s left operand is in-array state. That is the useful calibrati
 claims drawn from Scala structure alone were less reliable than they looked. Claim 5
 remains the one most likely to be wrong in the expensive direction.
 
+**Settled by experiment 2026-08-28.** Reading `PE.scala` suggested claim 2 might be
+recoverable in a stronger form -- `ATTN_VALUE` never writes `reg`, so
+`LOAD_STATIONARY(A)` followed directly by `ATTN_VALUE(B)` should compute `A @ B` with no
+RTL change at all. `rpu/experiments/gate_b_probe.py` tested that on the real Verilator
+RTL and it is **false**: rel err 1.28, and none of the sixteen operand-order/transpose
+combinations gets below 1.126, so it is not a layout mistake. See `DECISIONS.md` D-109,
+including the leading hypothesis (stale `CMP` state entering the top row through
+`acc_ui`). The probe is kept and is cheap to re-run.
+
 **The accumulator constraint, made concrete.** `accRows = 1 + rows` holds exactly one
 output tile plus the log-exp-sum row, so a GEMM with `M > cols` must loop over M-tiles
 and re-drain, with no room to keep several output tiles resident. Against the phase-1
