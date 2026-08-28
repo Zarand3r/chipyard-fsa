@@ -1,5 +1,12 @@
 # Gate B pre-read — can FSA become the RPU array?
 
+> **Superseded in part, 2026-08-28.** This note argued itself from "ATTN_VALUE is
+> already a GEMM" to "it is not" and back. The experiments settled it: **the existing
+> instructions do compute a general single-tile GEMM**, once the stationary operand is
+> loaded as `rev_both(A)`. `DECISIONS.md` D-110 retracts D-109 and carries the measured
+> result. Read the scorecard below with that outcome in hand; the reasoning is kept
+> unedited because the way it went wrong is the useful part.
+
 **Status:** source analysis only. Written before the array was built or simulated, so
 every claim here is a *prediction* to be checked against Gate B's actual run, not a
 result. Read against FSA @ the revision pinned by `chipyard-fsa@fa8665b7`.

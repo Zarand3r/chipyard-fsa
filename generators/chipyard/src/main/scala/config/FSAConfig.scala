@@ -264,3 +264,11 @@ class AXI4FSA16X16Bf16Config extends FSADirectAXI4Config(Configs.fsa16x16, Confi
 class AXI4FSA32X32Bf16Config extends FSADirectAXI4Config(Configs.fsa32x32, Configs.bf16MulFp32AddArithmeticImpl)
 class AXI4FSA64X64Bf16Config extends FSADirectAXI4Config(Configs.fsa64x64, Configs.bf16MulFp32AddArithmeticImpl)
 class AXI4FSA128X128Bf16Config extends FSADirectAXI4Config(Configs.fsa128x128, Configs.bf16MulFp32AddArithmeticImpl)
+// ---------------------------------------------------------------------------------
+// RPU: FSA plus a general tiled-GEMM execution plan (roadmap phase 2, Gate B).
+// See generators/chipyard/src/main/scala/rpu/GemmExecPlan.scala and rpu/DECISIONS.md.
+// ---------------------------------------------------------------------------------
+class RpuGemm4X4Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm4x4)
+class RpuGemm8X8Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm8x8)
+class RpuGemm16X16Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm16x16)
+class RpuGemm128X128Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm128x128)

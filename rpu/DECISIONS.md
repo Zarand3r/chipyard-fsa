@@ -352,3 +352,69 @@ convert a contested source reading into a fact, and the contest was real — thi
 own feasibility note argued both sides before the probe settled it. The probe is kept
 and is cheap to re-run; if a future change makes the two-instruction sequence work, it
 will say so.
+
+---
+
+## D-110 — **D-109 is retracted.** The existing instructions do compute a general GEMM
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** supersedes D-109
+
+**Retraction.** D-109 concluded, from an experiment on real RTL, that
+`LOAD_STATIONARY` + `ATTN_VALUE` does not compute `A @ B` and that a `GemmExecPlan` was
+therefore required. **That conclusion is wrong.** It was committed, and it was reported
+as settled fact. Both instructions compute the product correctly:
+
+```
+func=2 (ATTN_VALUE)    max rel err vs A@B : 2.497088e-08
+func=5 (GemmExecPlan)  max rel err vs A@B : 2.497088e-08
+```
+
+Identical to the last digit, on `[4x4] @ [4x4]` fp16 into fp32.
+
+**What was actually wrong: the stationary operand layout.** The array computes
+
+```
+C = rev_both(S) @ B
+```
+
+where `S` is the stationary tile as loaded and `rev_both` reverses **both** rows and
+columns. To get `A @ B`, load `S = A[::-1, ::-1]`. `gate_b_probe.py` instead copied
+`A_tile.reverse(dim=0)` from the attention kernel — a single row reversal, which is the
+convention `AttentionScoreExecPlan`'s upward flow needs, not this one.
+
+**Why the sweep did not catch it.** D-109 leaned on a sixteen-way check of operand
+orders and transposes and reported that none matched, treating that as proof the
+mechanism was broken. The sweep permuted the **product**; the error was in the
+**stationary operand**, and no transpose of `A @ B` equals `rev_both(A) @ B` for general
+`A`. Sixteen negative results looked like strong evidence and were simply the wrong
+sixteen.
+
+**What found it.** Identity operands. `B = I` makes the output *be* the transform of
+`A`, and it named `rev_both` in one run. `A = I` then confirmed the same model
+predicts the other case. That diagnostic should have come before any conclusion was
+recorded — it localizes, where pass/fail only judges.
+
+**Also unsupported: the stale-comparator hypothesis.** D-109 proposed that `ATTN_VALUE`
+without a preceding `ATTN_SCORE` accumulates stale `CMP` state through `acc_ui`. Since
+`ATTN_VALUE` is now shown to be exactly correct in that situation, there is no such
+effect to explain. Recorded as withdrawn, not merely unconfirmed.
+
+**Consequence for Gate B.** Single-tile `C = A @ B` needs **no RTL change**. The
+original feasibility claim — the one this file talked itself out of — was right.
+`GemmExecPlan` and `RpuGemm*Config` are kept because they build clean, elaborate, and
+produce identical results, and because dropping the online-softmax declarations is
+plausibly cheaper in cycles; but **it must now justify itself on measurements**, not on
+being necessary. If it cannot, it should be deleted rather than kept out of sympathy.
+
+**Open, and not to be confused with the above.** Two-k-tile accumulation currently
+fails for `func=2` and `func=5` *identically* (rel err ~9e36, garbage in the
+accumulator). Because both fail the same way, this is a defect in the probe kernel's
+double-buffering and semaphore handling, not a property of either plan. Gate B is not
+closed until tiling works and the phase-1 shapes run.
+
+**Process note, which is the durable part.** One negative experiment was treated as
+decisive while an untested assumption — the operand layout — sat underneath it. The
+lesson is not "run more experiments" but "when an experiment says a mechanism is
+broken, first make it produce a known answer." An identity matrix costs one run and
+distinguishes *wrong plumbing* from *wrong mechanism*; a sweep over plausible outputs
+does not.
