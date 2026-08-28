@@ -24,21 +24,49 @@ The FlashAttention-specific machinery is `exp2` (the PE computes `2^x` in place 
 its own MAC) and the `CMP` row along the top (running row-max for online softmax).
 GEMM simply does not assert them. Nothing has to be removed.
 
-### An existing execution plan is already a GEMM
+### No existing plan is a GEMM, but two of them are its halves
 
-`AttentionValueExecPlan` computes `O = P @ V`:
+**Corrected 2026-08-28**, after reading the Python kernel loop rather than the Scala
+plans alone. An earlier draft of this note claimed `AttentionValueExecPlan` was
+"structurally the inner step of a tiled GEMM already". That is wrong, in a way worth
+recording: it would have made Gate B look free when it is merely cheap.
 
+The FlashAttention inner loop (`python/main.py`) is:
+
+```python
+F.mx_load_stationary(Q_tile_rev, ...)              # Q is the stationary operand
+F.mx_attn_score(K_tile, L_tile, accumulate, ...)   # S = Q @ K^T, streaming K
+F.mx_attn_value(V_t_tile, O_t_tile, accumulate)    # O += P @ V, streaming V^T
 ```
-readScratchPad(0, rows, None)     // stream V from the scratchpad
-mac.flow_down(1, rows)            // multiply against the stationary tile
-acc_ui.flow_down(1, rows)         // accumulate downward
-flow_lr.flow_down(1, rows)
+
+`mx_attn_value`'s left operand is **not** the stationary tile. It is `P` -- the softmax
+result the score plan left sitting *inside the array*. That is FSA's fusion trick and
+the reason it needs no vector unit. It also means `ATTN_VALUE` cannot be handed two
+arbitrary matrices: one of its operands is in-array state with no load path.
+
+`AttentionScoreExecPlan` is the closer relative. Its first four declarations are a
+genuine `C = A_stationary . B_streamed`:
+
+```scala
+readScratchPad(0, rows, None)     // stream K from the scratchpad
+releaseSemaphore(rows - 1)
+mac.flow_up(1, rows)              // multiply against the stationary Q
+flow_lr.flow_up(1, rows)
+```
+
+Everything after that is online softmax -- `flow_ud` to push S back in, comparator
+`UPDATE` / `PROP_MAX` / `PROP_MAX_DIFF`, the `exp2` piecewise chain, the exp-sum `mac`.
+A GEMM keeps those four lines, drops all of it, and ends with the drain that
+`AttentionValueExecPlan` already uses:
+
+```scala
 readAccRAM(rows + cols - 1, rows, None)
 setAccumulator(rows + cols, rows, AccumulatorCmd.ACC_SA)
 ```
 
-That is `C += A·B` with `A` stationary — structurally the inner step of a tiled GEMM
-already. Preceded by `LoadStationary`, it is the whole k-tile loop body.
+So `GemmExecPlan` is roughly six declarations: the score plan's head, the value plan's
+tail, nothing in between. Cheap -- but a plan that has to be *written*, not one that
+already exists under another name.
 
 ### Accumulate-vs-seed across k-tiles already has an encoding
 
@@ -139,14 +167,25 @@ claim kept or broken — a feasibility note that is never scored is just optimis
 date on it. The claims are:
 
 1. GEMM needs no new PE control bits. *(from `PECtrl`'s nine signals)*
-2. `AttentionValueExecPlan` is structurally the k-tile loop body.
-3. Accumulate-vs-seed across k-tiles is already encodable (`MatrixInstructionAcc.zero`).
+2. ~~`AttentionValueExecPlan` is structurally the k-tile loop body.~~ **Already broken**,
+   before Gate B even ran -- see the correction above. Replaced by: `GemmExecPlan` is the
+   score plan's first four declarations plus the value plan's accumulator drain.
+3. Accumulate-vs-seed across k-tiles is already encodable (`MatrixInstructionAcc.zero`,
+   surfaced in Python as the `accumulate` argument to `mx_attn_value`).
 4. Adding the op requires at most one small upstream edit.
 5. **The scratchpad and accumulator sizing is the part that actually costs time.**
 
-Claim 5 is the one most likely to be wrong in the expensive direction. The others are
-structural readings that are hard to be wrong about; claim 5 is a judgement about
-effort.
+Claim 2 was broken by reading the *Python* kernel; the Scala plans alone did not reveal
+that `ATTN_VALUE`'s left operand is in-array state. That is the useful calibration here:
+claims drawn from Scala structure alone were less reliable than they looked. Claim 5
+remains the one most likely to be wrong in the expensive direction.
+
+**The accumulator constraint, made concrete.** `accRows = 1 + rows` holds exactly one
+output tile plus the log-exp-sum row, so a GEMM with `M > cols` must loop over M-tiles
+and re-drain, with no room to keep several output tiles resident. Against the phase-1
+shapes at `fsa128x128`, `qkv_proj` (`[256x1152] @ [1152x3456]`) is 2 M-tiles x 27
+N-tiles x 9 K-tiles = 486 stationary loads. Whether that is acceptable or whether
+`accRows` must grow is the first real question Gate B has to answer.
 
 ## The call this feeds
 

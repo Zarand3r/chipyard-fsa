@@ -16,7 +16,12 @@ say() { printf '\n== %s ==\n' "$1"; }
 chk() { if eval "$2" >/dev/null 2>&1; then echo "  PASS  $1"; else echo "  FAIL  $1"; fail=1; fi; }
 
 say "0. Pinned checkout"
-chk "chipyard-fsa at pinned ${PIN:0:8}" "[ \"\$(git rev-parse HEAD)\" = $PIN ]"
+# HEAD is rpu-main, which is ahead of the pin by our own commits (D-106). What the
+# gate must assert is that we branched from the pin and that msaga-main still IS the
+# pin -- not that HEAD equals it, which would fail the moment we commit anything.
+chk "upstream mirror msaga-main is at ${PIN:0:8}" \
+    "[ \"\$(git rev-parse msaga-main)\" = $PIN ]"
+chk "HEAD descends from ${PIN:0:8}" "git merge-base --is-ancestor $PIN HEAD"
 chk "generators/fsa submodule populated" "[ -f generators/fsa/src/main/scala/fsa/AXI4FSA.scala ]"
 chk "conda env built"                    "[ -d .conda-env ]"
 chk "env.sh present"                     "[ -f env.sh ]"
@@ -27,8 +32,12 @@ say "1. Verilator simulator for $CONFIG"
 # (D-101), then uv for the FSA Python API.
 export PATH="$HOME/miniforge3/bin:$HOME/miniforge3/condabin:$HOME/.local/bin:$PATH"
 chk "conda on PATH for env.sh" "command -v conda"
+# chipyard's activate-riscv-tools.sh dereferences $RISCV before setting it, so `set -u`
+# aborts the activation. Relax it across the source only, not for the whole gate.
+set +u
 # shellcheck disable=SC1091
 source env.sh
+set -u
 chk "simulator builds" "make -C sims/verilator CONFIG=$CONFIG -j\$(nproc)"
 
 say "2. FSA Python reference vs Verilator vs Torch"

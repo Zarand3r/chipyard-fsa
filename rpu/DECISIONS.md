@@ -259,3 +259,47 @@ that gets silently rewritten whenever it disagrees is not a contract.
 
 **Keep / revert.** Keep. Revisit only if a downstream phase needs the exact bytes
 available without a torch install, which would be an argument for LFS, not for git.
+
+---
+
+## D-108 — Gate A closed on its simulation legs; what "reproduces upstream" can honestly mean here
+
+**Date:** 2026-08-28 · **Roadmap phase:** 0 · **Status:** adopted
+
+**Result.** `rpu/scripts/gate-a.sh` at `FSA4X4Fp16Config`: 8 PASS, 1 SKIP.
+`build-setup.sh --skip-ctags --skip-firesim --skip-marshal` completes clean, the
+Verilator simulator builds in 53 s, and `main.py --seq_q 4 --seq_kv 4 --diff` runs to
+`*** PASSED ***` in 4587 simulation cycles.
+
+```
+Error of FSA vs torch:         MAE 2.9919e-04  RMSE 3.7714e-04  MaxErr 7.5042e-04
+                               RelErr 1.6433e-03  MaxRelErr 2.1891e-02
+Error of PyEasyFloat vs torch: MAE 2.9919e-04  RMSE 3.7714e-04  MaxErr 7.5042e-04
+                               RelErr 1.6433e-03  MaxRelErr 2.1891e-02
+```
+
+Performance counters: `execTime=353`, `mxActive=67`, `mxBubble=209`, `dmaActive=22`,
+`mxInst=5`, `dmaInst=4`, `rawInst=32`.
+
+**What the numbers actually establish.** The two rows are *identical to every printed
+digit*. That is the result worth having: the RTL under Verilator agrees with the
+PyEasyFloat software golden exactly, and both diverge from torch by the same amount,
+which is the fp16 arithmetic difference and not a hardware bug. The RTL ↔ golden leg is
+bit-exact; the golden ↔ torch leg is a tolerance comparison. Those are the two arrow
+types the roadmap's verification chain distinguishes, visible in one run.
+
+**What they do not establish, and a discrepancy not to paper over.** FSA's README
+publishes `MAE 9.6587464e-05` for what looks like the same invocation. We get
+`2.9919e-04`. The README also prints an `MSE` key where the pinned code prints `RMSE`,
+so the README demonstrably predates the pinned commit and its figure is not a
+reproduction target. **We therefore cannot claim to have reproduced upstream's published
+number**, only that the flow runs and that RTL and golden agree exactly. That is enough
+to pass Gate A as the roadmap words it ("reproduce upstream behaviour"), and it is not
+enough to claim more.
+
+**The FPGA leg is SKIP, so Gate A is not fully closed.** Per D-102, the gate asks for
+three-way agreement and we have demonstrated two-way. The script prints
+`gate is NOT fully closed`, and no summary of this work should round that up.
+
+**Keep / revert.** Keep. Re-run from `msaga-main` at any time to confirm the backbone
+still reproduces without our changes present (D-106).
