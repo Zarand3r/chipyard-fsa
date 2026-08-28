@@ -1,0 +1,406 @@
+{
+  "checkpoint": {
+    "path": "/home/rbao/rpu-simulation/reference/checkpoints/DiT-XL-2-256x256.pt",
+    "sha256": "9ec1876e4c03471bca126663a30e2d1b20610b6d2f87850a39a36f25cc685521"
+  },
+  "environment": {
+    "device": "cpu",
+    "dtype": "float32",
+    "fused_attention_disabled_in_modules": 28,
+    "numpy": "2.4.6",
+    "platform": "Linux-7.0.0-29-generic-x86_64-with-glibc2.43",
+    "python": "3.11.15",
+    "torch": "2.11.0+cu128"
+  },
+  "pin": {
+    "batch": 1,
+    "block_index": 0,
+    "class_label": 207,
+    "depth": 28,
+    "head_dim": 72,
+    "hidden_size": 1152,
+    "image_size": 256,
+    "latent_size": 32,
+    "model": "DiT-XL/2",
+    "num_classes": 1000,
+    "num_heads": 16,
+    "num_tokens": 256,
+    "patch_size": 2,
+    "seed": 0,
+    "timestep": 500
+  },
+  "recomputation": {
+    "bit_exact": true,
+    "max_abs_delta": 0.0
+  },
+  "tensors": {
+    "adaln_in_silu": {
+      "dtype": "float32",
+      "note": "SiLU(c) -- the A operand of the adaLN projection",
+      "sha256": "2c15fcd689512a6443beae8b6a9c2c795f23c1174d13b7ec2d8ce4677faa6472",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "adaln_out": {
+      "dtype": "float32",
+      "note": "SiLU -> Linear(hidden, 6*hidden); adaLN-Zero parameters",
+      "sha256": "6f54678d3349b9bce99e171dd7b8141ed747cb374096b6d4815a3dc4fc819a8d",
+      "shape": [
+        1,
+        6912
+      ]
+    },
+    "attn_ctx": {
+      "dtype": "float32",
+      "note": "O = P @ V, (B,H,N,Dh)",
+      "sha256": "17034db04003e7ddd5975ae3851af6f1feadf9d7ae6dcdd9b3e7ef31b94cfad9",
+      "shape": [
+        1,
+        16,
+        256,
+        72
+      ]
+    },
+    "attn_probs": {
+      "dtype": "float32",
+      "note": "P = softmax(S), row-wise",
+      "sha256": "04909c3f0c08cde2c4ed9926ea47652c564e6eb5986bc1a7b9a2c00d7a2ae618",
+      "shape": [
+        1,
+        16,
+        256,
+        256
+      ]
+    },
+    "attn_proj_out": {
+      "dtype": "float32",
+      "note": "output projection",
+      "sha256": "082566043440b781bd370317a3eda17ad2f37b04d2e31fdb1364493f68409dc7",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "attn_scale": {
+      "dtype": "float32",
+      "note": "1/sqrt(d_head); folded into Q before the score GEMM, as timm does it",
+      "sha256": "8aa03bc067113d89b7a16049567350db55afed1d4905c4eae3a38e4820d4b052",
+      "shape": []
+    },
+    "attn_scores": {
+      "dtype": "float32",
+      "note": "S = (Q*scale) @ K^T, matches timm's manual path",
+      "sha256": "a7178b9beaefa7f19cf56bf638db708d5878d6c74f3452c12e2947203c78d760",
+      "shape": [
+        1,
+        16,
+        256,
+        256
+      ]
+    },
+    "b_adaln": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "85d0f836ad3df365b8f8e0c4cc4e30fbcda5b49e6a1366e97d5f1b7dab245ede",
+      "shape": [
+        6912
+      ]
+    },
+    "b_fc1": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "62e4a927bbf0357eeed99b7d6b5b7f5facf8c2c74be59eaf2b4ea84306b998d7",
+      "shape": [
+        4608
+      ]
+    },
+    "b_fc2": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "c0b0be8b48587f3bd189d44bd85e3f9aec1c3a92f30401419f10e9d3b5f6352a",
+      "shape": [
+        1152
+      ]
+    },
+    "b_proj": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "57fafa02cc09788fe0d2552846d1488629aaefc8eb969a7492ee7b7377323ba6",
+      "shape": [
+        1152
+      ]
+    },
+    "b_qkv": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "ad8e2bbac507b27f7e77231ba58f1fb9db0980a11fc59a2acfeec4e238f0d7ac",
+      "shape": [
+        3456
+      ]
+    },
+    "block_in_c": {
+      "dtype": "float32",
+      "note": "conditioning vector: t_embed + y_embed",
+      "sha256": "b6b09b514d1783fde66074799fc3ed28c074e5c3158b0caf5cddba4e1efb3cfb",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "block_in_x": {
+      "dtype": "float32",
+      "note": "activations entering the block: patch-embed + pos-embed",
+      "sha256": "309945b70583117b98993309d24d33e220a4a5b130a12d827ef49cb173877f58",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "block_out": {
+      "dtype": "float32",
+      "note": "gated residual: x1 + gate_mlp * mlp_out",
+      "sha256": "91ae988756ab5021370f08b7e0e94ac17f0d4ef81e0c77db839d2b906cbbfeba",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "block_out_reference": {
+      "dtype": "float32",
+      "note": "the block module's own output, for comparison",
+      "sha256": "91ae988756ab5021370f08b7e0e94ac17f0d4ef81e0c77db839d2b906cbbfeba",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "gate_mlp": {
+      "dtype": "float32",
+      "note": "adaLN-Zero per-channel parameter",
+      "sha256": "6bec2cdf26f5a2811145acb051a035fdbad0faffc9d5c3135bd4eea9f8c8df3e",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "gate_msa": {
+      "dtype": "float32",
+      "note": "adaLN-Zero per-channel parameter",
+      "sha256": "1691b66cbec386e8070bed25e8a7eed9f41527d9b5666c5356f19ab5f3b40e71",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "k": {
+      "dtype": "float32",
+      "note": "(B,H,N,Dh)",
+      "sha256": "178d8e8cfdc8ca9afcd938d9ffedd8e5ad1867b9235d0a38b8223f5935cc45a7",
+      "shape": [
+        1,
+        16,
+        256,
+        72
+      ]
+    },
+    "mlp_fc1_out": {
+      "dtype": "float32",
+      "note": "hidden -> 4*hidden",
+      "sha256": "d041d20f93dd9cb1838d9514c64f7a7277600ae0ef832213b4108fad0bd335ff",
+      "shape": [
+        1,
+        256,
+        4608
+      ]
+    },
+    "mlp_fc2_out": {
+      "dtype": "float32",
+      "note": "4*hidden -> hidden",
+      "sha256": "306e38558eac59ba436dfc99b29cd90f5b2c42c5369bafe464891bb4461043ff",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "mlp_gelu_out": {
+      "dtype": "float32",
+      "note": "GELU, approximate='tanh'",
+      "sha256": "5733dd3829897f31aa12a43bed32e41600e23857f852b3589d2ec3312e5eab69",
+      "shape": [
+        1,
+        256,
+        4608
+      ]
+    },
+    "modulate1_out": {
+      "dtype": "float32",
+      "note": "x*(1+scale)+shift -- per-channel affine",
+      "sha256": "4649fa874947d78c25f9d2de0dd3b999b55556c5f72a6fef9bb4637351158583",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "modulate2_out": {
+      "dtype": "float32",
+      "note": "x*(1+scale)+shift",
+      "sha256": "85955a8e21fcbc81da3ff3f8845a8f7b8b6d2207d180fc1b3c9ac6d1fa554255",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "norm1_out": {
+      "dtype": "float32",
+      "note": "LayerNorm, elementwise_affine=False, eps=1e-6",
+      "sha256": "bdba914897d9a865b129048a3097559cc00f75b4212c5180ae3830b976de16aa",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "norm2_out": {
+      "dtype": "float32",
+      "note": "LayerNorm, elementwise_affine=False, eps=1e-6",
+      "sha256": "f71ca41243d5968df620242ae9fe38adc948ee57a8d50473fe0de05125a2278c",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "q": {
+      "dtype": "float32",
+      "note": "(B,H,N,Dh)",
+      "sha256": "81d794da5a59586c8a2cd2b6f01fdf0bc7503cee731d0edc281b3bd5661771b7",
+      "shape": [
+        1,
+        16,
+        256,
+        72
+      ]
+    },
+    "qkv_proj_out": {
+      "dtype": "float32",
+      "note": "fused QKV projection, bias=True",
+      "sha256": "e5c2fdcc1961e59769aa8e50ff3036f71ceb11025327c6b97c8f20481675f922",
+      "shape": [
+        1,
+        256,
+        3456
+      ]
+    },
+    "residual1_out": {
+      "dtype": "float32",
+      "note": "gated residual: x + gate_msa * attn_out",
+      "sha256": "c385e484e2d733a79d4df1d209c3e8d989ad808e300049cb085e3cbec608e266",
+      "shape": [
+        1,
+        256,
+        1152
+      ]
+    },
+    "scale_mlp": {
+      "dtype": "float32",
+      "note": "adaLN-Zero per-channel parameter",
+      "sha256": "187632ba6300e5b5de9a7cd5a34535c566e10e8a785ada46e1d055a646e05123",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "scale_msa": {
+      "dtype": "float32",
+      "note": "adaLN-Zero per-channel parameter",
+      "sha256": "53b721ee59d976efcdac2ad15d597ccf72f69f5c44ec9462800a4af5c517c4cc",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "shift_mlp": {
+      "dtype": "float32",
+      "note": "adaLN-Zero per-channel parameter",
+      "sha256": "7f5faf402aa930d238478e69b9f705a675ba4ff6ceaa4add6f40fbb9f3984d5a",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "shift_msa": {
+      "dtype": "float32",
+      "note": "adaLN-Zero per-channel parameter",
+      "sha256": "0674b282c21d27964b292e3c56b8aba59a7950e6a5f1c20121b19841859e45eb",
+      "shape": [
+        1,
+        1152
+      ]
+    },
+    "v": {
+      "dtype": "float32",
+      "note": "(B,H,N,Dh)",
+      "sha256": "004d51ef3a8464c0c3351ca26add14e01ba1e5f97291ce8c3e55dcf3a6fc69f8",
+      "shape": [
+        1,
+        16,
+        256,
+        72
+      ]
+    },
+    "w_adaln": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "7f8fa3774b57f611d951af88703041d9f8c0a47abcc9feb40cca3870491b8dc2",
+      "shape": [
+        6912,
+        1152
+      ]
+    },
+    "w_fc1": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "e0ee9f5cbbae3cd01fb457d369b238447bb5cb69c7ba82fe19171f15c0ae4852",
+      "shape": [
+        4608,
+        1152
+      ]
+    },
+    "w_fc2": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "1e289e704a9f163b999320583f9553bdff887fb9fa3ce89a2421353c15d0de59",
+      "shape": [
+        1152,
+        4608
+      ]
+    },
+    "w_proj": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "9d5ee2a06b01128f3b26651742589a0c82e287ab319c8a8621879dc2d27b4076",
+      "shape": [
+        1152,
+        1152
+      ]
+    },
+    "w_qkv": {
+      "dtype": "float32",
+      "note": "block weight",
+      "sha256": "f392cf4ae78a3ecd5600e4e909de08d1d2bda0c0f564b18dc242430fd870f2b8",
+      "shape": [
+        3456,
+        1152
+      ]
+    }
+  }
+}
