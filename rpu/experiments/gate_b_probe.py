@@ -1,4 +1,14 @@
-"""Gate B probe: is a single-tile GEMM already expressible with existing FSA instructions?
+"""Gate B probe -- KEPT AS A RECORD OF A WRONG ANSWER. Do not trust its conclusion.
+
+This probe reported that the existing instructions cannot compute A @ B. That is false:
+its stationary operand used `reverse(dim=0)`, copied from the attention kernel, when the
+array wants `rev_both` (rows AND columns). With the layout fixed, func 2 and func 5 both
+compute the product at rel err ~2.5e-08. See DECISIONS.md D-110 for the retraction and
+rpu_gemm.py for the working implementation; gate_b_test.py is the real suite.
+
+Original description follows.
+
+Gate B probe: is a single-tile GEMM already expressible with existing FSA instructions?
 
 rpu/GATE_B_FEASIBILITY.md argued back and forth about this. The Scala plans suggested
 ATTN_VALUE was already a GEMM; the Python kernel suggested it was not, because its left

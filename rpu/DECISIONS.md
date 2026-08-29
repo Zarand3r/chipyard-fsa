@@ -418,3 +418,55 @@ lesson is not "run more experiments" but "when an experiment says a mechanism is
 broken, first make it produce a known answer." An identity matrix costs one run and
 distinguishes *wrong plumbing* from *wrong mechanism*; a sweep over plausible outputs
 does not.
+
+---
+
+## D-111 — GEMM accumulation needs `scale = 1`; the accumulator multiplies by a stale register
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** adopted
+
+**The bug.** Tiled GEMM passed every non-accumulating case at ~3e-8 and failed every
+accumulating one, always by the same amount (rel ~9.13e36, and exact `0.0` in some
+elements). Fences, `waitPrevAcc` (which maps to full serialization, `!io.busy`) and
+double-buffer fixes changed nothing — the constancy was the clue: nothing was racing.
+
+**The cause.** `Accumulator.scala` implements the accumulate command as
+
+```
+acc sa: out <- scale * sram_in + sa_in
+```
+
+where `scale` is `Seq.fill(cols) { Reg(accType) }` — **per-column, and never reset**. In
+FlashAttention it carries the online rescale factor `exp(m_old - m_new)`, written by
+`ATTN_SCORE` through `EXP_S1`/`EXP_S2` before every `ATTN_VALUE`. A plain GEMM has no
+such factor and requires `scale = 1`, but nothing in a GEMM sequence ever writes it.
+
+A single-tile GEMM cannot see this. The first k-tile sets `MatrixInstructionAcc.zero`,
+which makes `sram_in` the ZERO constant, so `scale * 0` vanishes whatever `scale` holds.
+The register only becomes visible from the second k-tile onward — which is exactly the
+boundary the test results drew.
+
+**Why upstream never hit it.** FSA's own `main.py --seq_q 4 --seq_kv 4` produces a
+single K block, so it issues one `ATTN_VALUE` per output tile and never accumulates. At
+`--seq_kv 8` it does accumulate, and passes — because `ATTN_SCORE` sets `scale` for it.
+Gate A therefore passed without exercising the path at all. Worth remembering when
+reading any conformance gate: passing says what ran, not what works.
+
+**The fix.** `AccConstIdx` offers only `ZERO`, so there is no constant 1.0 to read.
+Added `SetAccScale` (func 6) — `readAccRAM` + `SET_SCALE`, structurally
+`AttentionLseNormScale` without the reciprocal — and the host DMAs 1.0 into one
+accumulator row before the k loop. `accRows` is `1 + rows`, so the C tile plus this one
+scale row fill it exactly; the spare row attention uses for the log-exp-sum is precisely
+what a GEMM needs for its scale.
+
+**What this does and does not say about `GemmExecPlan`.** D-110 required the new plan to
+justify itself on measurements rather than necessity. This does **not** rescue it: the
+instruction that is genuinely required is `SetAccScale`, and `ATTN_VALUE` plus
+`SetAccScale` may well be sufficient for the whole thing. `GemmExecPlan` still has to
+earn its place on cycle counts, and the test harness runs both func codes so that
+comparison is one flag away.
+
+**Generalises beyond this bug.** Any RPU operation reusing the accumulator inherits an
+unreset register whose meaning is attention-specific. Phase 8's weight-streaming and
+FP4/FP8 work will touch the same path, and the same question — *what is `scale` when I
+arrive?* — should be asked there rather than rediscovered.

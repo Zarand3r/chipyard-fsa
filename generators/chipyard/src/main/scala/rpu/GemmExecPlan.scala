@@ -17,6 +17,34 @@ import fsa.sa._
   */
 object RpuMxFunc {
   def GEMM = 5.U
+  def SET_ACC_SCALE = 6.U
+}
+
+/** `scale <- AccRAM[rs2.addr]`, so a GEMM can accumulate.
+  *
+  * `Accumulator.scala` implements `ACC_SA` as **`out = scale * sram_in + sa_in`**, where
+  * `scale` is a per-column register with no reset. In attention it carries
+  * FlashAttention's online rescale factor `exp(m_old - m_new)`, written by
+  * `ATTN_SCORE`'s `EXP_S1`/`EXP_S2`. A plain GEMM has no such factor and needs
+  * `scale = 1`.
+  *
+  * A single-tile GEMM does not notice: the first k-tile sets `MatrixInstructionAcc.zero`,
+  * which makes `sram_in` the ZERO constant, so `scale * 0` vanishes whatever `scale`
+  * holds. From the second k-tile onward it is multiplied into the running sum -- which
+  * is exactly the observed failure: accumulating cases returned garbage (~1e37, and
+  * exact 0 where the stale register happened to be 0) while every non-accumulating case
+  * passed at ~3e-8.
+  *
+  * `AccConstIdx` offers only ZERO, so there is no constant 1.0 to read. The host writes
+  * 1.0 into one accumulator row by DMA and issues this instruction once before the k
+  * loop. Structure mirrors `AttentionLseNormScale` without the reciprocal.
+  */
+class SetAccScale(val rows: Int, val cols: Int) extends ExecutionPlan {
+  readAccRAM(0, 1, None, rmw = false)
+  setAccumulator(1, 1, AccumulatorCmd.SET_SCALE)
+  releaseSemaphore(1)
+  // Blocking: everything after it depends on the scale register.
+  setConflictFree(1)
 }
 
 /** `C = A * B` for one tile: the general matrix product FSA does not otherwise have.
@@ -84,7 +112,8 @@ object RpuConfigs {
         ISA.MxFunc.ATTENTION_VALUE_COMPUTE  -> new AttentionValueExecPlan(rows, cols),
         ISA.MxFunc.ATTENTION_LSE_NORM_SCALE -> new AttentionLseNormScale(rows, cols, ap),
         ISA.MxFunc.ATTENTION_LSE_NORM       -> new AttentionLseNorm(rows, cols),
-        RpuMxFunc.GEMM                      -> new GemmExecPlan(rows, cols)
+        RpuMxFunc.GEMM                      -> new GemmExecPlan(rows, cols),
+        RpuMxFunc.SET_ACC_SCALE             -> new SetAccScale(rows, cols)
       )
     }
   )
