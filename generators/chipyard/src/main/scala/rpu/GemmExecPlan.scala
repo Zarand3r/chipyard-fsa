@@ -81,7 +81,15 @@ class GemmExecPlan(val rows: Int, val cols: Int) extends ExecutionPlan {
   // Drive an explicit zero down from the comparator row for the whole window, one cycle
   // ahead of the MACs that consume it. This is the declaration that makes the plan a
   // GEMM rather than "ATTN_VALUE without a score step".
-  setComparator(0, rows, CmpControlCmd.PROP_ZERO)
+  //
+  // The window must span the ENTIRE compute, not just `rows` cycles.
+  // `mac.flow_down(1, rows)` is a Downward FlowRange with `effEnd = 1 + rows + rows - 1`,
+  // so PEs are still consuming the comparator's output at cycle `2*rows - 1`. An
+  // earlier version drove PROP_ZERO for only `rows` cycles; that survived 4x4, 8x8 and
+  // 16x16 because the unreset inter-PE pipes happened to still be draining zeros over
+  // the short remaining window, and it failed hard at 32x32 -- inf/NaN, seed-dependent,
+  // on a single tile. Same class as D-113, caught by testing a fourth array size.
+  setComparator(0, 2 * rows, CmpControlCmd.PROP_ZERO)
 
   // C = reg (the stationary A tile) * l_input (the streamed B tile), accumulating
   // downward so the partial sums drain out of the bottom row into `io.acc_out`.
@@ -125,6 +133,7 @@ object RpuConfigs {
   // Same array, 4 memory ports instead of 8. Diagnostic for the corrupted output rows
   // at 16x16, which land at row index == 3 (mod 8) -- see DECISIONS.md D-112.
   lazy val gemm16x16p4 = withGemm(Configs.defaultFSAParams(16, 16, 4))
+  lazy val gemm32x32   = withGemm(Configs.fsa32x32)
   lazy val gemm128x128 = withGemm(Configs.fsa128x128)
 
   /** FP8 element formats.

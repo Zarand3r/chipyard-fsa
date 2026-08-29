@@ -271,6 +271,7 @@ class AXI4FSA128X128Bf16Config extends FSADirectAXI4Config(Configs.fsa128x128, C
 class RpuGemm4X4Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm4x4)
 class RpuGemm8X8Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm8x8)
 class RpuGemm16X16Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm16x16)
+class RpuGemm32X32Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm32x32)
 class RpuGemm128X128Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm128x128)
 class RpuGemm16X16P4Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm16x16p4)
 

@@ -1498,3 +1498,52 @@ figures must not be quoted *from the small configs* — at 4x4 they measure a fi
 transfer latency, not the machine. Figures from 128x128 would not have this problem, and
 the cycle model should carry `~76 cycles/transfer` as a measured constant rather than
 treating it as a stall to be optimised away.
+
+---
+
+## D-132 — **OPEN DEFECT** at 32x32, and a correction to D-131's evidence
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** open
+
+**Correction first.** D-131 reported a bubble trend of 89.3% → 82.5% → 67.7% → **40.7%**
+across 4x4, 8x8, 16x16 and 32x32. **The 32x32 run produced wrong values** (rel err
+4.34e-01) and I did not check correctness before quoting its cycle count. The trend
+itself still stands on the three configurations that were verified correct — 89.3% →
+82.5% → 67.7%, with cycles/DMA constant at 75.9 / 76.1 / 76.6 — and the 32x32 point
+should be treated as indicative only until the defect below is fixed. Quoting a
+performance number from a run I had not checked for correctness is the same class of
+error as D-119 and D-129: a real measurement, reported past what it supports.
+
+**The defect.** `RpuGemm32X32Fp16Config` fails on a **single tile**:
+
+| RTL seed | rel err |
+|---|---|
+| default | `inf` |
+| 1 | `nan` |
+| 7 | 2.633e+36 |
+
+Seed-dependent inf/NaN on one tile is D-113's signature: **uninitialised state reaching
+the accumulator**. 4x4, 8x8 and 16x16 are all correct, so it is size-dependent.
+
+**Ruled out.**
+
+- *ISA address width.* `SPAD_MAX_ADDR_BITS = ACC_MAX_ADDR_BITS = 20`; 32x32 needs 8 bits
+  for `spadRows = 192` and 6 for `accRows = 33`.
+- *`PROP_ZERO` window too short.* `GemmExecPlan` drove the comparator for `rows` cycles
+  while `mac.flow_down(1, rows)` consumes it until `2*rows - 1`. Extending it to
+  `2*rows` is correct on its own terms and is **kept** — but it does not fix 32x32, and
+  4x4 still passes at rel 2.497e-08 after the change, so it is not a regression either.
+
+**Next experiment, concretely.** Run the D-113 diagnostic ladder at 32x32, in this
+order, because each step localises rather than judges:
+1. `B = I` — does the output equal a transform of `A`, or is it garbage everywhere?
+   That separates a dataflow/layout problem from uninitialised state.
+2. If garbage, map *which* rows/columns are bad and whether they move with the seed
+   (D-113's method), which distinguishes a stuck pipeline stage from a capacity limit.
+3. Check `spadBanks`/`accBanks` (both default 2) and `nMemPorts = 8` at 32x32 against
+   4x4's 4 — the banked SRAM's `nSubBanks = rowSize * elemWidth / 8 / beatBytes` has a
+   `require` that could interact with the wider rows.
+
+**Consequence.** Gate B's multi-config claim now covers 4x4, 8x8 and 16x16 only.
+`gate-b.sh` should not be extended to 32x32 until this is resolved, and no number from
+that configuration should be quoted meanwhile.
