@@ -1187,3 +1187,43 @@ golden.
 a property of the **bring-up workload**, not of the RPU — DiT-XL/2 is awkward, the RPU
 is not. That reframing is worth carrying into phase 8: the architecture does not inherit
 this problem.
+
+---
+
+## D-126 — Phase 7: a complete DiT block runs on the array, fused attention included
+
+**Date:** 2026-08-29 · **Roadmap phase:** 7 · **Status:** simulation legs closed
+
+**Result.** `rpu/experiments/phase7_dit.py` at `RpuGemm16X16Fp16Config`, synthetic
+tile-aligned DiT (`d_head = 16 == rows`, 2 heads, hidden 32, 16 tokens):
+
+| stage | on the array | vs float reference |
+|---|---|---|
+| adaLN modulation | diagonal matmul (option A) | rel 2.744e-04 |
+| QKV projection | GEMM | rel 5.009e-05 |
+| **attention** | **FSA fused: LOAD_STATIONARY / ATTN_SCORE / ATTN_VALUE / reciprocal / LSE-norm** | rel 4.866e-04 |
+| output projection | GEMM | rel 1.049e-04 |
+| gated residual | vector op | — |
+| GELU | golden only (D-121, gate 1) | — |
+
+**The result that matters is the attention row.** Every earlier phase ran attention as
+two separate GEMMs, because DiT-XL/2's `d_head = 72` excludes fusion at any
+power-of-two array size (D-124). This is the first time FSA's **fused FlashAttention** —
+the accelerator's entire reason to exist — has carried a DiT-shaped workload end to end
+in this program, and it did so at rel 4.87e-04 against a float64 reference.
+
+**Reused, not reimplemented.** The attention call is upstream's own
+`scaled_dot_product_attention` kernel from `generators/fsa/python/main.py`, driven with
+our synthetic model's Q/K/V. Writing a second attention kernel would have tested our
+kernel, not theirs.
+
+**Scope, restated because it is easy to overclaim.** The model is synthetic and randomly
+initialised (D-125). This is **pipeline completeness**, not fidelity. Phase 5 owns
+fidelity, on the real DiT-XL/2 checkpoint, and its numbers are the ones that describe
+the workload. `gate-phase7.sh` carries that caveat in its own header and output.
+
+**Roadmap position.** Phases 0, 1, 2, 3, 4, 5 and 7 now have their simulation legs
+closed. Phase 6 and phases 10-12 are hardware-blocked (D-102). Phase 8 is partially
+done — FP8 is a config parameter and demonstrated (D-122); MXFP4 microscaling is the one
+genuine datapath addition remaining. Phase 9's simulator ↔ RTL correlation is reachable;
+its FPGA leg is not.
