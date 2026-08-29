@@ -1,0 +1,51 @@
+diff --git a/src/main/scala/fsa/FSA.scala b/src/main/scala/fsa/FSA.scala
+index 0669a6d..9348898 100644
+--- a/src/main/scala/fsa/FSA.scala
++++ b/src/main/scala/fsa/FSA.scala
+@@ -35,7 +35,13 @@ case class FSAParams(
+       ISA.MxFunc.ATTENTION_LSE_NORM -> new AttentionLseNorm(rows, cols)
+     )
+   },
+-  unitTestBuild: Boolean = false
++  unitTestBuild: Boolean = false,
++  /** MXFP4 dequant (§5.1): shared power-of-two scale on streamed weight elements.
++    * E8M0 biased, so 127 == 1.0 and dequant is a pure exponent add with no multiplier
++    * -- the property GOLDEN_MODEL_SPEC §3 gives as MXFP4's reason for existing. Static
++    * here: this validates the datapath; per-block delivery needs instruction plumbing
++    * (rpu/DECISIONS.md D-143). */
++  weightScaleExp: Int = 127
+ ) {
+   def spadAddrWidth = log2Up(spadRows)
+   def accAddrWidth = log2Up(accRows)
+@@ -160,9 +166,30 @@ class FSA[E <: Data : Arithmetic, A <: Data : Arithmetic]
+   val accConstVal = accConstList(accConstSel)
+ 
+   inputDelayer.io.in.valid := RegNext(mxControl.io.sp_read.valid, false.B)
++  // §5.1 dequant row. The shared MXFP4 scale is a power of two, so applying it is an
++  // exponent add and never a multiply. Zero must stay zero: bumping the exponent of a
++  // zero significand would manufacture a denormal out of nothing.
++  //
++  // The element type is generic here, so this matches FloatPoint at elaboration and is
++  // a no-op for any other arithmetic. A production version belongs in the Arithmetic
++  // typeclass rather than as a type test.
++  private def applyWeightScale(v: E): E = {
++    val delta = fsaParams.weightScaleExp - 127
++    if (delta == 0) v else v match {
++      case fp: fsa.arithmetic.FloatPoint =>
++        val out = WireDefault(fp)
++        val isZero = fp.exp === 0.U && fp.mantissa === 0.U
++        val shifted = (fp.exp.zext + delta.S).asUInt
++        out.exp := Mux(isZero, 0.U, shifted(fp.exp.getWidth - 1, 0))
++        out.asInstanceOf[E]
++      case _ => v
++    }
++  }
++
+   inputDelayer.io.in.bits.data := Mux(RegNext(mxControl.io.sp_read.bits.is_constant),
+     VecInit(Seq.fill(SA_ROWS)(spConstVal)),
+-    spRAM.fullRead.head.data.asTypeOf(inputDelayer.io.in.bits.data)
++    VecInit(spRAM.fullRead.head.data.asTypeOf(inputDelayer.io.in.bits.data)
++      .map(applyWeightScale))
+   )
+   inputDelayer.io.in.bits.rev_input := RegNext(mxControl.io.sp_read.bits.rev_sram_out)
+   inputDelayer.io.in.bits.delay_output := RegNext(mxControl.io.sp_read.bits.delay_sram_out)

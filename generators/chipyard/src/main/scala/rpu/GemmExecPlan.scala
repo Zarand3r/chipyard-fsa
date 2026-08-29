@@ -165,6 +165,12 @@ object RpuConfigs {
   // at 16x16, which land at row index == 3 (mod 8) -- see DECISIONS.md D-112.
   lazy val gemm16x16p4 = withGemm(Configs.defaultFSAParams(16, 16, 4))
   lazy val gemm32x32   = withGemm(Configs.fsa32x32)
+
+  /** §5.1 dequant validation: the same 16x16 array with a shared power-of-two weight
+    * scale applied on the spad -> array path. 2^(exp-127), so 128 doubles and 126
+    * halves. Needs rpu/patches/02 applied. */
+  def withWeightScale(base: FSAParams, exp: Int): FSAParams = base.copy(weightScaleExp = exp)
+  lazy val gemm16x16scale2 = withWeightScale(withGemm(Configs.fsa16x16), 128)
   lazy val gemm128x128 = withGemm(Configs.fsa128x128)
 
   /** FP8 element formats.

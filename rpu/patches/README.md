@@ -10,3 +10,4 @@ Apply with `rpu/patches/apply.sh`, revert with `rpu/patches/revert.sh`.
 | patch | why |
 |---|---|
 | `01-dma-inst-queue-depth.patch` | D-130: `dmaInst` is `Queue(..., pipe = true)` with no `entries`, so it holds Chisel's default of **2**, while `mxInst` gets `mxInflight = 8`. The decoder is a single in-order splitter, so a full DMA queue stalls every instruction behind it and caps prefetch at 2 regardless of scratchpad size. This makes the depth a parameter so the hypothesis can be measured. |
+| `02-mxfp4-dequant-stage.patch` | D-143: adds `FSAParams.weightScaleExp` and applies it as an exponent add on the spad -> array path (§5.1 dequant row). Validates that MXFP4's multiplier-free dequant works in this datapath; per-block delivery is separate. |

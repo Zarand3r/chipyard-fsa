@@ -2068,3 +2068,50 @@ the next step is narrow: instrument `accRAM.fullWrite.addr` and the DMA's read o
 check whether the 16-of-32 corrupted columns map onto the DMA beat structure. Everything
 upstream of the store is now known-good, which is a much better starting point than four
 cycles ago.
+
+---
+
+## D-143 — MXFP4's dequant works and is multiplier-free; but the spad output is the wrong place for it
+
+**Date:** 2026-08-29 · **Roadmap phase:** 8 · **Status:** mechanism validated, placement corrected
+
+**Built.** `rpu/patches/02-mxfp4-dequant-stage.patch` adds `FSAParams.weightScaleExp`
+(E8M0 biased, 127 == 1.0) and applies it as an **exponent add** on the spad → array
+path, with zero handled explicitly — bumping the exponent of a zero significand would
+manufacture a denormal out of nothing. `RpuGemm16X16Scale2Config` sets 128, i.e. 2.0.
+
+**The mechanism works, exactly.** The scaled config's output matches a scaled reference
+at **rel 1.586e-07** — identical to the unscaled baseline, so the exponent add
+introduces no error at all. That is §3's claim about MXFP4 confirmed in RTL: *"dequant =
+exponent add, no multiplier"*.
+
+**And it revealed the placement constraint, which is the more useful result.** The
+expectation was 2x. The measurement is **4x**:
+
+| config | expected | measured |
+|---|---|---|
+| `RpuGemm16X16Fp16Config` | 1.0x | 1.0x, rel 1.586e-07 |
+| `RpuGemm16X16Scale2Config` | 2.0x | **4.0x**, rel 1.586e-07 |
+
+Because `LOAD_STATIONARY` streams its operand through the *same* spad → `inputDelayer` →
+`pe_data` path as the GEMM's streamed operand. A dequant stage placed there scales
+**both** operands, giving `2 x 2 = 4`. The result is exact, and it is exactly twice the
+intended dequant.
+
+**What that means for the real feature.** MXFP4 scales weights only, so the dequant
+cannot live at the spad output as a static stage — it must be **per-instruction**,
+applied to the weight stream and not to the stationary load. That in turn is why the
+instruction plumbing is unavoidable: `MatrixInstructionSpad` is a 32-bit bundle with
+`addr(20) + stride(5) + 3 bools`, leaving **4 spare bits** — not enough for an 8-bit
+E8M0 scale, so per-block delivery needs either a widened encoding or a scale-set
+instruction of the kind `SetAccScaleOne` already establishes a pattern for.
+
+**Honest scope.** This validates the arithmetic half of §5.1 and costs one 45-line
+patch. The delivery half — per-block scales reaching the right operand — is specified
+here but not built, and it is the larger part.
+
+**Patch tooling hardened, twice.** `apply.sh` applied *every* patch when given no
+argument, which silently re-applied patch 01 that D-130 keeps reverted; it now requires
+explicit numbers. `revert.sh` hardcoded patch 01's file and would have left this patch's
+changes in place; it now restores the whole submodule, which is correct because nothing
+of ours is supposed to live there (D-106).
