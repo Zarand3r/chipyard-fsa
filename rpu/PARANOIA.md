@@ -16,7 +16,7 @@ known-answer probe says otherwise.
 
 ## Rules
 
-### 1. A result is scoped to the configuration it was measured on
+### 1. A result is scoped to the configuration it was measured on — and a ratio to its base
 
 **Incidents: D-110, D-112.** Both generalised a 4x4 measurement to "the design".
 `ATTN_VALUE` computes a correct GEMM at 4x4 and corrupts rows at 8x8 and 16x16;
@@ -25,6 +25,12 @@ size we benchmarked.
 
 Gates run **>= 3 array sizes**. Any claim in a commit message, decision or report names
 its configuration, or it is not a claim.
+
+**Incident: D-119.** The same error with a denominator instead of a configuration.
+"99.2% of MACs wasted" was true *within* an elementwise op and implied the op mattered;
+against a whole block the overhead is **0.84%**, and the recommendation reversed once
+the arithmetic was done. A ratio without its base is as unscoped as a benchmark without
+its config. Compute the number that answers the question, not the one that is easy.
 
 ### 2. Sweep the RTL random seed
 

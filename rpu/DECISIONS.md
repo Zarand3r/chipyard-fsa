@@ -883,8 +883,26 @@ step and defeats weight streaming; (C) add a row-restricted `FlowRange` plus an
 elementwise plan — a bounded control change, with `ControlGen.optimize()` as the risk and
 its `verify()` as the safety net.
 
-**Recommendation: C for the RPU, A for bring-up only with the waste quoted.** B stays on
-the table if conditioning turns out to be chunk-static, since zero-cost is hard to beat.
+**Recommendation: A — and this reverses the recommendation this entry first carried.**
+The "99.2% waste" figure is a ratio *within the op*, and quoting it alone implies the op
+matters. Measured against a whole block
+(`rpu/experiments/modulation_cost.py`), option A costs:
+
+| workload | array rows | elementwise share of block | option A overhead |
+|---|---|---|---|
+| DiT-XL/2 bring-up | 128 | 0.026% | +3.31% |
+| DiT-XL/2 bring-up | 16 | 0.026% | +0.41% |
+| RPU contract (§2) | 128 | 0.007% | **+0.84%** |
+
+Under one percent at the shapes the RPU is designed for. Spending a `ControlGen` change
+plus an `optimize()` rewrite — the least testable part of the control path — to recover
+0.84% is a bad trade. Take A; revisit C only if a *measurement* shows the overhead
+matters, or if a later op needs genuine elementwise capability for a non-cost reason.
+
+**Recorded because the error is instructive.** This is the same failure as D-110 and
+D-112: a true number generalised past what it supports. There the scope was a
+configuration; here it was a denominator. PARANOIA rule 1 now reads as covering both —
+a ratio without its base is as unscoped as a benchmark without its config.
 
 **Measured, not assumed: the `exp2Done` hazard does not fire today.** PARANOIA rule 8
 flagged `PE.scala:55` as unreset with an undocumented ordering precondition, and phase 4

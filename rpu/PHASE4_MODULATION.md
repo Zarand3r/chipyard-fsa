@@ -21,18 +21,28 @@ expression on this array.
 
 ## Three options, costed
 
-### A. Diagonal matmul
+### A. Diagonal matmul  — **recommended**
 
 `X * s` becomes `X @ diag(s)`. Correct, needs **no RTL change**, works today.
+`diag(s)` is block-diagonal, so for output n-tile *j* only k-tile *j* is non-zero; a
+scheduler that skips the zero k-tiles pays `rows` times the useful work, not
+`rows * C/rows`.
 
-Cost: the array performs a length-`rows` contraction where one term is wanted. At
-`fsa128x128` that is **127/128 = 99.2% of the MACs wasted** on every modulation and
-every gate. DiT-XL/2 has two modulations and two gates per block.
+**Cost, measured rather than asserted** (`rpu/experiments/modulation_cost.py`):
 
-This is the trap D-104 and the sibling repo's D-005 both name: it inflates exactly the
-utilisation and J/block figures phase 6 exists to measure. Usable as a bring-up crutch
-**only if every derived number is quoted with the waste**, and a "temporary" crutch in an
-energy comparison has a way of surviving into the results table.
+| workload | array rows | elementwise share of block | option A overhead |
+|---|---|---|---|
+| DiT-XL/2 bring-up | 128 | 0.026% | **+3.31%** |
+| DiT-XL/2 bring-up | 16 | 0.026% | +0.41% |
+| RPU contract (§2) | 128 | 0.007% | **+0.84%** |
+
+An earlier version of this document quoted "99.2% of MACs wasted" and stopped there.
+That ratio is true *within the op* and it is misleading on its own: an elementwise op is
+`O(M*C)` where a projection is `O(M*C*C)`, so at RPU contract shapes the whole thing
+costs **under one percent** of the block. The waste is enormous and the op is tiny.
+
+At `C = 5120` the overhead falls as `rows/C` grows less significant, which is why the
+RPU's own shapes are cheaper than the bring-up model's.
 
 ### B. Fold the scale into adjacent weights
 
@@ -71,9 +81,20 @@ which is the good case.
 
 ## Recommendation
 
-**C for the RPU, A only for bring-up and only with the waste quoted.** B is rejected for
-the streaming case but should be re-examined if conditioning turns out to be
-chunk-static, because zero-cost is hard to beat.
+**A.** It needs no RTL change, no control-plane risk, and costs **+0.84% of block MACs
+at RPU contract shapes**. Spending a `ControlGen` change and an optimizer rewrite to
+recover under a percent is a bad trade, and option C's risk sits in `optimize()`, which
+is the least testable part of the control path.
+
+Revisit C only if a measurement — not an estimate — shows the overhead matters, or if
+some later op needs genuine elementwise capability for a reason other than cost.
+
+B stays rejected for the streaming case but should be re-examined if conditioning turns
+out to be chunk-static, because zero-cost is hard to beat.
+
+**The recommendation was reversed by doing the arithmetic.** It was C until the overhead
+was computed against a whole block instead of against the op. Both numbers were correct;
+only one of them answered the question.
 
 None of this is blocked on `d_head = 72` (D-115): modulation, gates, GELU and LayerNorm
 are per-channel and carry no head dimension.
