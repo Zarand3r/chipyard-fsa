@@ -170,7 +170,21 @@ def build_kernel(func: int, shape: Shape):
         # all-ones, then read back by SET_SCALE. Using `c_acc` rather than a dedicated
         # row matters: accRows is 1 + rows, which does not fit two (rows, cols) tiles.
         # The first real k-tile below sets zero=True and overwrites it.
-        if s.kt > 1:
+        # ALWAYS prime, never conditionally.
+        #
+        # `Accumulator.scale` is `Seq.fill(cols) { Reg(accType) }` -- per column, and
+        # unreset. `ACC_SA` computes `out = scale * sram_in + sa_in`, and a k=0 tile
+        # sets zero=True so `sram_in` is the ZERO constant. `scale * 0` is 0 for any
+        # finite scale, which is why skipping the prime looked safe -- but
+        # **NaN * 0 = NaN**, and Inf * 0 = NaN. Any column whose power-on scale holds a
+        # NaN or Inf bit pattern therefore poisons its own output even on a single tile.
+        #
+        # That is exactly D-132: column-structured corruption, data-independent, at a
+        # fixed set of 16 of 32 columns, appearing only at 32x32 because 4x4/8x8/16x16
+        # happened to power up without a NaN in any column. The `if s.kt > 1` guard was
+        # added by me during the 16x16 investigation as an isolation step and never
+        # removed.
+        if True:
             F.load_tile(ones_a, a_buf[0], sem_a[0])
             F.mx_load_stationary(a_buf[0], sem_a[0])
             F.load_tile(ones_b, b_buf[0], sem_b[0])

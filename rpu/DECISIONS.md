@@ -1567,3 +1567,60 @@ regression.
 **Consequence.** Gate B's multi-config claim now covers 4x4, 8x8 and 16x16 only.
 `gate-b.sh` should not be extended to 32x32 until this is resolved, and no number from
 that configuration should be quoted meanwhile.
+
+---
+
+## D-133 — D-132 was two defects. One is fixed: `NaN * 0 = NaN` through an unreset per-column register
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** half resolved
+
+**Found without the waveform, from the column-structure clue.** D-132's corruption was
+*column*-indexed, and the design has exactly one piece of per-column state:
+
+```scala
+val scale = Seq.fill(cols) { Reg(accType) }        // Accumulator.scala:46, UNRESET
+// acc sa: out <- scale * sram_in + sa_in
+```
+
+A k=0 tile sets `zero=True`, so `sram_in` is the ZERO constant and `scale * 0` is 0 —
+**for any finite scale**. But `NaN * 0 = NaN`, and `Inf * 0 = NaN`. Any column whose
+power-on `scale` holds a NaN or Inf pattern poisons its own output *even on a single
+tile with a zeroed accumulator read*.
+
+**And the guard was mine.** `rpu_gemm.py` primed the scale only `if s.kt > 1`. I added
+that condition during the 16x16 investigation as an isolation step — "skip priming when
+there is no accumulation, to see whether priming is the culprit" — and never removed it.
+It looked safe precisely because `scale * 0 = 0` is true for every finite value, so it
+survived 4x4, 8x8 and 16x16, where no column happened to power up NaN.
+
+**Fixed.** Priming is now unconditional. The result:
+
+| config | before | after | seed-dependent? |
+|---|---|---|---|
+| 32x32 | `inf` / `nan` / 2.633e+36 | **9.366e-01** | **no** — identical at both seeds |
+| 16x16 | 1.586e-07 | 1.586e-07 | no |
+| 4x4 | 2.497e-08 | 2.497e-08 | no |
+
+Non-finite values are gone and the result is now **seed-independent**, which is the
+signature that uninitialised state is no longer reaching the output. That half of D-132
+is closed.
+
+**The other half is still open.** 32x32 now returns a *deterministic, finite* rel err of
+9.366e-01 while 16x16 and 4x4 stay exact. Deterministic and seed-independent means logic
+or layout, not power-on state — a different defect that the NaN was masking.
+
+**Leading hypothesis for the remainder, and a cleaner fix for both.** The priming
+sequence is self-referential: it computes the all-ones tile with a GEMM whose own
+`ACC_SA` multiplies by the very register it is trying to initialise. If any column's
+scale is NaN when the priming GEMM runs, that column's "ones" is NaN, and `SET_SCALE`
+then loads NaN back into scale. D-111 identified a route that avoids the dependency
+entirely: `EXP_S1` sets `scale <- sa_in * attentionScale + 0` — **no dependence on the
+old scale** — and `EXP_S2` then applies `pow2`, so with `sa_in = 0` the pair yields
+`scale = 2^0 = 1` deterministically. Adding that pair to `GemmExecPlan` is a small,
+derived change and is the next step.
+
+**Method note.** The waveform D-132 called for was not needed. The column-structure
+observation plus one grep for per-column state was enough, and it was available two
+cycles earlier — the same "look at what the symptom's *shape* implicates" move that
+cracked D-113 via `B = I`. Reaching for the heavy tool is not the same as reaching for
+the right one.
