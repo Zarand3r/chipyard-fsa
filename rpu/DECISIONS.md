@@ -1227,3 +1227,57 @@ closed. Phase 6 and phases 10-12 are hardware-blocked (D-102). Phase 8 is partia
 done — FP8 is a config parameter and demonstrated (D-122); MXFP4 microscaling is the one
 genuine datapath addition remaining. Phase 9's simulator ↔ RTL correlation is reachable;
 its FPGA leg is not.
+
+---
+
+## D-127 — Phase 8 pre-RTL study: MXFP4 on real DiT weights
+
+**Date:** 2026-08-29 · **Roadmap phase:** 8 · **Status:** study delivered; no decision made
+
+**Context.** D-122 split phase 8: FP8 is a config parameter and demonstrated working;
+**MXFP4 microscaling is the one genuine datapath addition** FSA lacks. Before building
+it, measure it — on the real DiT-XL/2 weights from the phase-1 trace, not on synthetic
+tensors. The insertion point is confirmed: between `spRAM.fullRead` and `inputDelayer`
+in `FSA.scala`.
+
+**Quantization error** (E2M1 elements, one E8M0 scale per 32, round-to-nearest):
+
+| tensor | MXFP4 rms rel | FP8 E4M3 rms rel | fp16 rms rel |
+|---|---|---|---|
+| `w_qkv` | 0.1308 | 0.0280 | 0.000207 |
+| `w_proj` | 0.1209 | 0.0268 | 0.000208 |
+| `w_fc1` | 0.1247 | 0.0271 | 0.000207 |
+| `w_fc2` | 0.1492 | 0.0277 | 0.000208 |
+
+**Memory, which is the point.** 4 bits per element plus 8 bits of scale per 32 elements
+= **4.25 bits/weight**. One block's weights: fp16 30.4 MiB → MXFP4 8.1 MiB, a **3.76x**
+reduction. §2 puts 14B weights at 7.0 GB in 4-bit under weight streaming with no
+resident weights, so DRAM traffic scales directly with bits/weight — at 16-bit the same
+shapes would be 28 GB per step, which is not a bandwidth budget that closes. **This is
+the lever the architecture rests on.**
+
+**The finding worth carrying forward: MXFP4 error does not average out.** Measured
+end-to-end on the qkv projection with real activations at K = 1152:
+
+| weights | output rms rel |
+|---|---|
+| fp16 | 0.00017 |
+| MXFP4 | 0.07826 |
+
+Per-weight error 0.1336 → output error 0.0783 is only a **1.7x** reduction, where
+independent noise over K = 1152 would give roughly √K ≈ 34x. MXFP4's error is
+*correlated with weight magnitude* — relative error is roughly uniform across elements —
+so it behaves like a systematic scaling rather than noise, and the contraction absorbs
+almost none of it. Any error budget that assumed √K averaging is wrong by more than an
+order of magnitude.
+
+**Read as an upper bound, not a verdict.** These weights were trained in fp32 and
+quantized round-to-nearest with **no calibration**. §3 specifies a weight image
+"quantized offline", which in practice means calibration or quantization-aware training,
+and §2 assumes 4-bit weights as a *premise* rather than something to be discovered. The
+honest statement is: naive MXFP4 of an fp32 DiT checkpoint costs ~7.8% output error, and
+the gap between that and an acceptable figure is the work a quantization pipeline does.
+
+**Not a decision.** DECIDE-1 and DECIDE-2 belong to the pre-RTL numerics study's owner.
+This is input to it, measured on real weights, together with the GELU piece-count study
+(D-121).
