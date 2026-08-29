@@ -46,20 +46,34 @@ mechanism broken. It permuted the *product* while the fault was in the *operand*
 Pass/fail judges. Identity localises. When something is wrong, first make the hardware
 produce an answer you already know.
 
-### 4. Never scroll past an assertion
+### 4. A tolerance hides modelling errors in both directions
+
+**Incident: D-116.** Gate B compared the array against float32 numpy under a guessed
+envelope, loose by two orders of magnitude. Replacing it with PyEasyFloat and demanding
+*exact* equality immediately exposed an error — in the **golden**, not the RTL: it
+carried one continuous fma chain across K, where the hardware contracts each k-tile from
+zero and merges with a single fused `ACC_SA` rounding. Single-tile cases matched; every
+k-accumulating case missed by ~1 ulp.
+
+Under a tolerance that mistake is invisible forever, and so is any hardware error
+smaller than the envelope. Where the roadmap draws a `<-->` arrow, demand equality and
+model the arithmetic properly. Where a tolerance is genuinely required, it is *derived*
+and its derivation is written down.
+
+### 5. Never scroll past an assertion
 
 The Verilator build carries `--assert` and the RTL has `DelayedAssert`s on real
 contracts (e.g. `PopCount(computeFlags) <= 1`). `rpu_gemm.make_engine` captures
 simulator output and any assertion **fails the case**. Assertions must never be noise.
 
-### 5. Bound the cycle limit
+### 6. Bound the cycle limit
 
 **Incident: DMA into accumulator SRAM (D-111).** `isAccum` is declared in the DMA
 instruction bundle and read nowhere in the RTL, so the transfer never completes and the
 semaphore never releases. With `max_cycles=0` that hung silently for six minutes. Probes
 pass a bounded `max_cycles` so a deadlock fails loudly.
 
-### 6. Upstream tests cover upstream's usage only
+### 7. Upstream tests cover upstream's usage only
 
 **Incidents: D-111, D-113.** FSA's `main.py --seq_kv 4` issues one K block, so it never
 exercises accumulation at all — Gate A passed without touching the path. And
@@ -69,7 +83,7 @@ never tested.
 A passing upstream suite says what ran, not what works. Before reusing an upstream
 mechanism, ask what their tests actually drive.
 
-### 7. Ask what the state is when you arrive
+### 8. Ask what the state is when you arrive
 
 **Incident: D-113, and D-111 before it.** Both were state that someone else's
 instruction normally initialises.
@@ -89,10 +103,10 @@ before adding an instruction.
 
 ## Applying it to the next phases
 
-- **Phase 3 (RPU numerical golden).** Software, so rules 1-2 do not apply, but rule 3
-  does: build known-answer vectors before random ones. `GOLDEN_MODEL_SPEC` §10 already
+- **Phase 3 (RPU numerical golden).** Software, so rules 1-2 do not apply, but rules 3-4
+  do: build known-answer vectors before random ones. `GOLDEN_MODEL_SPEC` §10 already
   asks for must-fail mutants — those are rule 3 in the spec's own words.
 - **Phase 4 (AdaLN/GELU/modulation).** GELU or softmax will drive `exp2`. Check
-  `exp2Done` (rule 7) *before* debugging any wrong answer, and sweep seeds immediately.
+  `exp2Done` (rule 8) *before* debugging any wrong answer, and sweep seeds immediately.
 - **Phase 6 (measurement).** Every number carries its configuration (rule 1), and any
   padding is quoted with it (D-104).

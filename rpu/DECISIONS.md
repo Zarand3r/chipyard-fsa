@@ -711,3 +711,52 @@ errors. The rigorous comparison is against **PyEasyFloat**, FSA's own bit-accura
 which is what upstream checks against and what makes the RTL ↔ golden leg bit-exact
 rather than approximate. Wiring that in is the right next hardening step and is not yet
 done.
+
+---
+
+## D-116 — The RTL ↔ golden leg is now bit-exact, and building the golden found a real modelling error
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** adopted
+
+**What changed.** Gate B compared the array against a float32 numpy matmul under a
+tolerance `max(1e-3, 3e-4*sqrt(k/rows))`. D-115 flagged that as an envelope somebody
+guessed, loose by two orders of magnitude, and noted the honest comparison was
+PyEasyFloat — FSA's own bit-accurate model, the one `main.py --diff` checks attention
+against. `rpu/experiments/gemm_golden.py` now provides it, and
+`gate_b_test.py --bitexact` requires **exact equality**, not a tolerance.
+
+This matters because the roadmap marks RTL ↔ golden as a `◄──►` arrow. A tolerance
+comparison cannot support a bit-exactness claim, and until now Gate B was quietly making
+the weaker one.
+
+**Result: 42/42 at `rel 0.000e+00`** — 3 array sizes x 7 cases x 2 RTL seeds, zero
+mismatches. The array reproduces the golden exactly at every configuration.
+
+**Building it immediately caught a modelling error, which is the point.** The first
+golden carried one continuous fma chain across all of K. Single-tile, m-tiling and
+n-tiling matched bit-exactly; **every k-accumulating case missed by ~1 ulp**. The
+hardware does not work that way:
+
+- each k-tile contracts *inside the array from zero*, the partial sum flowing down a
+  column through `rows` PEs, in reversed order (matching `fa_ref.py`'s `__mul_pv`);
+- only then is the tile merged into accumulator SRAM by `ACC_SA`, which is
+  `out = scale * sram_in + sa_in` — a single fused rounding, with `scale` primed to 1.0
+  by `SetAccScale` (D-111).
+
+Modelling it as per-tile contraction plus an `fma(1.0, acc, tile)` merge makes all seven
+cases exact. Note which side was wrong: the RTL was right the whole time, and a
+tolerance comparison would never have revealed the golden's error at all. **A tolerance
+hides modelling mistakes in both directions.**
+
+**Where the old numbers went.** The previously reported rel errors against numpy
+(2.5e-08 to 1.75e-07) were **entirely reduction-order difference, not hardware error** —
+the bit-exact golden itself differs from numpy fp32 by 5.44e-08 on the same shapes.
+
+**Phase 3 groundwork, for free.** `gemm_golden.py` is a small, working instance of what
+phase 3 must build at scale: exact arithmetic semantics — operand widths, reduction
+order, rounding points, accumulator merge — expressed in software and checked against
+RTL. `GOLDEN_MODEL_SPEC` §3 and §4 specify precisely these properties for the RPU.
+
+**Kept, not replaced.** The tolerance path remains the default because the bit-exact
+golden is a scalar FMA per MAC and too slow for large shapes. `--bitexact` is the
+stronger claim; the tolerance path is the fast screen.
