@@ -1770,3 +1770,64 @@ the loose tolerance was concealing it.
 Until that runs, **the FP8 error figures above should not be quoted as E4M3's accuracy**
 — only as "the array produced these, and they have not yet been checked against exact
 E4M3 arithmetic".
+
+---
+
+## D-137 — The FP8 discrepancy is subnormal handling, and it violates §3
+
+**Date:** 2026-08-29 · **Roadmap phase:** 8 · **Status:** root-caused; a real spec conflict
+
+**D-136's open question, answered.** The array's E4M3 output differed from a *bit-exact*
+E4M3 reference by the same amount it differed from numpy (3.198e-03), and the reference
+and numpy agreed with each other — so the array was not doing exact E4M3 arithmetic, and
+the loose tolerance had been hiding it.
+
+**Isolated in one run.** Same config, same shapes, only the operand *range* varied:
+
+| operands | E4M3 subnormals present | vs bit-exact golden |
+|---|---|---|
+| `normal(0, 1)` | 4 | differs, rel 3.198e-03 |
+| `uniform [0.5, 4]` | 0 | **BIT-EXACT** |
+| `uniform [1, 2]` | 0 | **BIT-EXACT** |
+
+The discrepancy is **entirely subnormal operands**. With none present the FP8 path is
+bit-exact, which also confirms there is no other defect in it.
+
+**Why fp16 never showed this.** E4M3 has bias 7, so its smallest normal is `2^-6 =
+0.0156` and its subnormals occupy `0.002 … 0.0137` — a range `normal(0,1)` populates
+constantly. fp16's smallest normal is `6.1e-5`, which random data essentially never
+reaches. The fp16 path is bit-exact (D-116) because it never exercises the case.
+
+**And upstream documents it.** FSA's README: *"FSA uses hardware floating-point
+arithmetic from EasyFloat, which **simplifies subnormal handling** compared to
+HardFloat."* This is a known, deliberate simplification — not a bug in FSA. It only
+becomes material when the element format is narrow enough for subnormals to be common.
+
+**The conflict, which is the point for phase 8.** `GOLDEN_MODEL_SPEC` §3 requires:
+
+> Rounding: round-to-nearest-even at every format boundary; saturating casts …;
+> **FP8/FP4 denormals supported as per OCP MX spec**
+
+FSA's arithmetic does not meet that for narrow formats. So phase 8's "FP8 attention,
+FP4 linear compute" is **not** simply a config parameter after all — D-122's finding
+holds for the datapath *width*, but the RPU's denormal requirement needs arithmetic FSA
+does not implement. MXFP4 is worse: E2M1's only subnormal is 0.5, which is 1 of its 8
+magnitudes, so a large fraction of every weight block lands there.
+
+**Consequences.**
+
+- D-122 is narrowed, not retracted: FP8 works as a config parameter, and is bit-exact
+  **on normal-range operands**. The claim now carries that qualifier.
+- D-136's DiT figures (rel 1.06e-02 … 8.79e-02) are explained: real activations and
+  weights cast to E4M3 contain many subnormals. They are **not** E4M3's intrinsic
+  accuracy; they are EasyFloat's subnormal behaviour plus quantization, and should not
+  be quoted as either alone.
+- Phase 8's real cost list gains an item: **OCP-conformant subnormal handling in the
+  MAC**, alongside MXFP4 block scaling (D-127).
+- `rpu/golden/formats.py` already implements OCP denormals exactly and is validated
+  against `ml_dtypes` on all 512 codes, so the reference for whatever gets built exists.
+
+**Method note.** This is the third time a loose tolerance concealed a real effect
+(D-116, D-136, here) and the second time the fix was to demand equality and then vary
+one input property until the difference moved. Ranges are a diagnostic axis, like seeds
+and configurations.
