@@ -1684,3 +1684,41 @@ fix is arithmetic on the plan, not more experiments.
 result this program has claimed — Gate B, phases 5 and 7, D-131's amortisation trend.
 32x32 is a capability gap. It should not block phase 8's MXFP4 work, which is the larger
 remaining item.
+
+---
+
+## D-135 — PARANOIA rule 5 caught a stale-binary claim one cycle after it was written
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** resolved
+
+**What the rule caught.** D-134 added rule 5 — *test the artifact you just built* — after
+I twice waited on a log line instead of a timestamp. The very next review applied it and
+found something worse than the original incident:
+
+| simulator | built | vs the func-7 change (~08:30) |
+|---|---|---|
+| `RpuGemm8X8Fp16Config` | Aug 28 19:02 | **stale** |
+| `RpuGemm16X16Fp16Config` | Aug 28 18:42 | **stale** |
+| `RpuGemm16X16E4M3Config` | Aug 29 01:35 | **stale** |
+
+`rpu_gemm.py` had been switched to emit `SET_ACC_SCALE_ONE` (func 7, D-134). Those three
+binaries do not implement it, so the instruction would have been a no-op and the scale
+never primed. **Gate B's multi-config claim was resting on simulators that predated the
+kernel they were supposedly testing** — and nothing in the last report said so, because
+nothing checked.
+
+**Rebuilt and re-verified.** All three rebuilt (09:04, 09:05, 09:06), then Gate B re-run
+across 4x4, 8x8 and 16x16: **21/21 passed, zero failures**. `SetAccScaleOne` is correct
+at every size that works, and the switch caused no regression.
+
+**Why this is worth its own entry.** The failure mode is not "a test broke" — it is
+"a test kept passing while measuring the wrong thing", which is the same shape as
+D-113's seed dependence, D-115's `kt == 1` slice, and D-118's random vector that
+distinguished nothing. Four instances now, all of the form *the check ran and proved
+less than it appeared to*. Rule 5 turned a silent one into a caught one within a single
+cycle, which is the strongest argument yet for writing the protocol down rather than
+carrying it in working memory.
+
+**Standing consequence.** Any claim about a configuration must be made against a binary
+newer than the last kernel or plan change. `stat -c %Y` on the simulator, compared to the
+edit time — not a log line, not a memory of having rebuilt.
