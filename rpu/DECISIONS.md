@@ -551,24 +551,51 @@ purely a transform of `A`:
 - *The config being unsound.* Upstream `main.py --seq_q 16 --seq_kv 16` passes on this
   exact config, matching PyEasyFloat.
 
-**Memory-port hypothesis: tested and REFUTED.** `Configs.fsa16x16` sets `nMemPorts = 8`
-where `fsa4x4` sets 4, and the corrupted rows were exactly those with index ≡ 3 (mod 8),
-which looked conclusive. A 4-port 16x16 config was built to test it
-(`RpuGemm16X16P4Fp16Config`). The corruption does not go away and does not become a
-mod-4 pattern — it moves to rows **7, 11 and 12**, i.e. *three* rows instead of two, with
-no clean period. Memory ports change the symptom without explaining it, so the fault is
-elsewhere. The 4-port config is kept; it is cheap and it is now a second data point.
+**Size dependence.** Same probe, same code, three array sizes:
 
-**What is still known.** The corruption is whole-rows, structural, reproducible across
-seeds, and confined to the output while every surviving element matches `rev_both(A)`.
-A whole corrupted *output* row is what a corrupted *stationary* row would produce, so
-the A-tile load path is the next thing to instrument — specifically whether every row of
-the stationary tile actually lands in the scratchpad before `LOAD_STATIONARY` consumes
-it. Note also that the good elements match at rel ~4e-4 rather than the ~1e-8 seen at
-4x4, even though `A @ I` with an fp32 accumulator should be exact; that discrepancy is
-probably the same fault seen at lower amplitude and should not be dismissed as fp16
-noise.
+| config | garbage rows | of |
+|---|---|---|
+| `RpuGemm4X4Fp16Config` | none — matches `rev_both(A)` at **rel 0.0, exact** | 4 |
+| `RpuGemm8X8Fp16Config` | 0, 1, 2, 5 — and the survivors do *not* match either | 8 |
+| `RpuGemm16X16Fp16Config` | 3, 11 — survivors match `rev_both(A)` | 16 |
 
+Not a clean scaling law: 8x8 is proportionally the worst. 4x4 being *exact* rather than
+merely close is the strongest evidence that the mechanism is right and something about
+larger arrays breaks it.
+
+**Five hypotheses tested and refuted.**
+
+1. *Operand layout.* Survivors match the predicted transform at 16x16.
+2. *A race between accumulation and readout.* A full `mx` fence before the store
+   changes nothing — and the fence is verified to actually execute (`fence` counter
+   1 -> 2, `execTime` 237 -> 248), so this is real evidence and not a no-op.
+   A fence *before* the GEMM also changes nothing.
+3. *Memory ports.* `fsa16x16` uses `nMemPorts = 8` and the bad rows were ≡ 3 (mod 8),
+   which looked conclusive. A 4-port build (`RpuGemm16X16P4Fp16Config`) still corrupts,
+   moving to rows 7, 11, 12 — three rows, no clean period.
+4. *Accumulator base address.* Shifting the tile by one accumulator row leaves the bad
+   rows at 3 and 11, so it is not a bank-select effect off the low address bits.
+5. *Stationary read direction.* Reading the tile backwards via `tile.reverse(dim=0)`,
+   as the attention kernel does, gives the same bad rows. It does confirm the transform
+   model — with the reversed read the survivors match `rev_cols(A)` exactly as predicted.
+
+**Localised.** The corruption is *positional in the accumulator*, not in the operands or
+the store:
+
+- `B = I`, `A = I`, and `A = B = I` all give the same bad rows, so it tracks neither
+  operand.
+- Storing the same accumulator tile twice into two different buffers gives
+  **bit-identical** results, both corrupted, so the store path is faithful and the
+  accumulator content is already wrong.
+- A row of `C^T` is one drain time step, so drain steps 3 and 11 are the ones going bad.
+
+**Best remaining hypothesis: an upstream defect that attention never exposes.**
+`ATTN_VALUE`'s drain is only ever exercised downstream of `ATTN_SCORE`, whose
+online-softmax chain is long and which leaves the comparator and accumulator in a
+specific state. Upstream's own suite cannot see this: `main.py` at 16x16 passes, and it
+always issues `ATTN_SCORE` first. Our GEMM is the first code to drive `ATTN_VALUE`
+directly at an array size above 4x4. If that is right, the fix is in the RTL rather than
+in the kernel, and it is worth reporting upstream.
 
 **Consequence.** Gate B is **not closed**, at any size. A gate that passes on the
 smallest configuration and fails on the next one up has not demonstrated the property it

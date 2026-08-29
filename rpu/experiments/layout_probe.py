@@ -19,8 +19,14 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--config", default="RpuGemm16X16Fp16Config")
 ap.add_argument("--func", type=int, default=2)
 ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--prefence", action="store_true",
+                help="drain the matrix engine before the GEMM")
+ap.add_argument("--rev", action="store_true",
+                help="read the stationary tile backwards, as the attention kernel does")
 args = ap.parse_args()
 
+REV = args.rev
+PREFENCE = args.prefence
 rows, cols = G.load_config(args.config)
 eng = G.make_engine(args.config)
 print(f"{args.config}: {rows} rows x {cols} cols")
@@ -35,8 +41,13 @@ def one(A: MTile, B_t: MTile) -> MTile:
     Ct = F.alloc_accumulator((N, M))
     sa, sb, sc = (F.Semaphore(id=i, n=2) for i in range(3))
     F.load_tile(A, At, sa)
-    F.mx_load_stationary(At, sa)
+    F.mx_load_stationary(At.reverse(dim=0) if REV else At, sa)
     F.load_tile(B_t, Bt, sb)
+    if PREFENCE:
+        # LoadStationary releases conflictFree at cols-1 but keeps writing `reg` via
+        # load_reg_li.parallel(1, cols) until cycle cols. The GEMM's first MACs can
+        # therefore read a partially loaded stationary register.
+        F.fence(mx=True, dma=False, stop=False)
     G.mx_gemm(args.func, Bt, Ct, False, sb)
     F.store_tile(Ct, C_t, sc)
     F.fence(mx=True, dma=True, stop=True)
@@ -55,6 +66,7 @@ cands = {
     "rev_rows(A)":     Af[::-1, :],
     "rev_cols(A)":     Af[:, ::-1],
     "rev_both(A)":     Af[::-1, ::-1],
+    "rev_cols(A) [REV]": Af[:, ::-1],
     "A.T":             Af.T if Af.shape[0] == Af.shape[1] else None,
     "rev_both(A).T":   Af[::-1, ::-1].T if Af.shape[0] == Af.shape[1] else None,
 }
