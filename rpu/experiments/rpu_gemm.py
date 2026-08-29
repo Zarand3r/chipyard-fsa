@@ -197,7 +197,7 @@ def build_kernel(func: int, shape: Shape):
 
 
 def run(engine, A: np.ndarray, B: np.ndarray, rows: int, cols: int,
-        func: int = ATTN_VALUE_FUNC) -> np.ndarray:
+        func: int = GEMM_FUNC) -> np.ndarray:
     """Execute A @ B on the array and return C as a normal (M, N) fp32 array."""
     m, k = A.shape
     k2, n = B.shape

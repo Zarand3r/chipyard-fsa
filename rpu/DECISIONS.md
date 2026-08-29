@@ -485,11 +485,11 @@ arrive?* — should be asked there rather than rediscovered.
 
 ---
 
-## D-112 — `GemmExecPlan` is cycle-identical to `ATTN_VALUE` and should be deleted
+## D-112 — `GemmExecPlan` is cycle-identical to `ATTN_VALUE` ~~and should be deleted~~
 
-**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** adopted, pending removal
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** **REVERSED by D-113's root cause**
 
-**Measurement.** `rpu/experiments/gemm_cycles.py`, `RpuGemm4X4Fp16Config`:
+**What was measured.** `rpu/experiments/gemm_cycles.py`, `RpuGemm4X4Fp16Config`:
 
 | shape | ATTN_VALUE | GemmExecPlan | delta |
 |---|---|---|---|
@@ -497,107 +497,94 @@ arrive?* — should be asked there rather than rediscovered.
 | k x4 | 859 | 859 | 0 |
 | m x n x k | 1607 | 1607 | 0 |
 
-`mxActive`, `mxBubble` and `mxInst` are identical too, and correctness is identical
-(D-110). D-110 required the plan to justify itself on measurements. It cannot.
+`mxActive`, `mxBubble` and `mxInst` identical too. On that basis this entry concluded the
+plan earned nothing and should be deleted.
 
-**Why this was predictable, and why the prediction was still worth testing.** In
-hindsight it could not have been otherwise: `GemmExecPlan` was *built from*
-`AttentionValueExecPlan`'s declarations plus one comparator command, and the
-online-softmax machinery everyone assumed it was dropping lives in `ATTN_SCORE`, not in
-`ATTN_VALUE`. The "dropping the softmax declarations is plausibly cheaper" hypothesis
-was inherited from the same misreading D-110 retracted. Measuring cost one script and
-closed it; reasoning about it had already produced two wrong answers.
+**Why that was wrong.** Both measurements were taken at **4x4**, the one array size where
+`ATTN_VALUE` happens to be correct for a bare GEMM. At 8x8 and 16x16 `ATTN_VALUE`
+corrupts whole drain steps and `GemmExecPlan` does not — see D-113. The plan's
+`setComparator(0, rows, PROP_ZERO)` is the difference, and it is load-bearing.
 
-The `PROP_ZERO` comparator command it adds also turned out to be unnecessary --
-`ATTN_VALUE` is correct without it, because what actually mattered was the accumulator
-scale (D-111), not the comparator.
+Cycle-identity is therefore the *good* outcome, not evidence of uselessness:
+`GemmExecPlan` buys correctness at every array size for **zero cycles**.
 
-**Decision.** Remove `GemmExecPlan` and `RpuMxFunc.GEMM`. **Keep `SetAccScale` and
-`RpuMxFunc.SET_ACC_SCALE`** — that instruction is genuinely required and has no
-upstream equivalent. Keep the `RpuGemm*Config` names: they remain the configs that can
-run a GEMM, now by virtue of `SetAccScale` alone.
+**Decision reversed.** Keep `GemmExecPlan` and `RpuMxFunc.GEMM`. It is the default
+function code in `rpu_gemm.py`. `ATTN_VALUE` is kept selectable via `--func 2` precisely
+because the contrast is the regression test for D-113.
 
-**Not yet executed.** The removal is deferred until D-113's defect is resolved, because
-running both function codes is currently useful evidence that a failure is in the
-harness rather than in one plan.
+**Lesson, and it is the same one as D-110.** A measurement taken at one configuration was
+generalised to the design. Both times the error was not in the measurement but in the
+scope silently attached to it. Benchmarks and correctness tests need their configuration
+in the claim, not just in the log.
 
 ---
 
-## D-113 — **OPEN DEFECT.** Tiled GEMM corrupts two output rows at 16x16
+## D-113 — **RESOLVED.** `ATTN_VALUE` accumulates from an undriven, unreset comparator path
 
-**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** open, blocks Gate B
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** root-caused and fixed
 
-**Correction to an earlier claim.** Gate B was reported as "7/7 cases PASSED". That was
-measured only at `RpuGemm4X4Fp16Config`. **At `RpuGemm16X16Fp16Config` all seven cases
-fail.** The earlier statement should have been scoped to the array size it was measured
-on; it was not, and this entry is the correction.
+**Symptom.** Tiled GEMM built on `ATTN_VALUE` was exact at 4x4 and corrupted whole drain
+steps at 8x8 and 16x16 — entire rows of ~1e14, deterministic across seeds and runs, with
+every surviving element arithmetically correct.
 
-**Symptom.** `rpu/experiments/layout_probe.py` at 16x16, with `B = I` so the output is
-purely a transform of `A`:
+**Root cause.** `AttentionValueExecPlan` asserts `acc_ui`, so each PE takes its addend
+from the neighbour above, and `SystolicArray` wires the top row's input to the `CMP`
+unit's `d_output`. **`ATTN_VALUE` issues no comparator command**, so that path is
+undriven, and every inter-PE pipeline register is built by
+`pipe_no_reset = withReset(false.B){ Pipe(in) }` — **data and valid both power up
+unreset**. The top row therefore accumulates power-on garbage, which lands in whichever
+drain steps it happens to reach.
 
-- 32 of 256 elements are garbage (|x| ~ 1e14), and they are exactly **two full rows**.
-- The rows are **3 and 11** — index ≡ 3 (mod 8) — and they are the same rows for seeds
-  0, 1 and 2, so this is **structural, not data-dependent**.
-- Every non-garbage element matches `rev_both(A)`, so the operand layout convention
-  established in D-110 is **correct at this size too**; nothing about the mapping is
-  wrong.
+**Proof, three independent ways.**
 
-**Ruled out.**
+1. *Issue `ATTN_SCORE` first and the drain is clean.* Zero garbage at 16x16, versus rows
+   3 and 11 without it. `ATTN_SCORE` drives the comparators (`UPDATE`, `PROP_MAX`,
+   `PROP_ZERO`) and flushes the array.
+2. *The corrupted rows track the Verilator `$random` seed*, which is definitive for
+   uninitialised state:
 
-- *Layout.* The good elements match, and no whole-matrix transform explains the rest.
-- *A race between the accumulation and the readout.* Adding a full `mx` fence before
-  `store_tile` changed nothing, and the error values are bit-identical run to run.
-- *The scale priming.* Skipping it entirely when `kt == 1` leaves single-tile failing.
-- *The config being unsound.* Upstream `main.py --seq_q 16 --seq_kv 16` passes on this
-  exact config, matching PyEasyFloat.
+   | seed | garbage rows |
+   |---|---|
+   | `e23cbb39` (default) | 3, 11 |
+   | 1 | 4, 7, 8, 14, 15 |
+   | 7 | 1, 3, 4, 5, 13 |
+   | 12345 | 1, 3, 5, 6, 7, 10, 11, 12, 13 |
 
-**Size dependence.** Same probe, same code, three array sizes:
+3. *Priming with repeated `ATTN_VALUE` does **not** help*, which rules out a generic
+   pipeline warm-up and points specifically at the comparator path that `ATTN_VALUE`
+   never drives.
 
-| config | garbage rows | of |
+This also explains every earlier confusion: deterministic per build (fixed seed), no
+clean scaling law (it depends on random values and pipeline depth), and 4x4 clean **by
+luck of the seed** rather than by construction.
+
+**The fix was already written.** `GemmExecPlan`'s `setComparator(0, rows, PROP_ZERO)` —
+added in the first place to force a defined zero addend — is exactly the missing drive.
+It was never tested above 4x4 until now.
+
+| config | `ATTN_VALUE` (func 2) | `GemmExecPlan` (func 5) |
 |---|---|---|
-| `RpuGemm4X4Fp16Config` | none — matches `rev_both(A)` at **rel 0.0, exact** | 4 |
-| `RpuGemm8X8Fp16Config` | 0, 1, 2, 5 — and the survivors do *not* match either | 8 |
-| `RpuGemm16X16Fp16Config` | 3, 11 — survivors match `rev_both(A)` | 16 |
+| 4x4 | clean | clean |
+| 8x8 | 32/64 elements garbage | **0** |
+| 16x16 | 32/256 elements garbage | **0** |
 
-Not a clean scaling law: 8x8 is proportionally the worst. 4x4 being *exact* rather than
-merely close is the strongest evidence that the mechanism is right and something about
-larger arrays breaks it.
+Full suite with func 5: **21/21 PASS across 4x4, 8x8 and 16x16**, rel err 2.5e-08 to
+1.75e-07, scaling with contraction length as fp32 accumulation should.
 
-**Five hypotheses tested and refuted.**
+**Consequences.**
 
-1. *Operand layout.* Survivors match the predicted transform at 16x16.
-2. *A race between accumulation and readout.* A full `mx` fence before the store
-   changes nothing — and the fence is verified to actually execute (`fence` counter
-   1 -> 2, `execTime` 237 -> 248), so this is real evidence and not a no-op.
-   A fence *before* the GEMM also changes nothing.
-3. *Memory ports.* `fsa16x16` uses `nMemPorts = 8` and the bad rows were ≡ 3 (mod 8),
-   which looked conclusive. A 4-port build (`RpuGemm16X16P4Fp16Config`) still corrupts,
-   moving to rows 7, 11, 12 — three rows, no clean period.
-4. *Accumulator base address.* Shifting the tile by one accumulator row leaves the bad
-   rows at 3 and 11, so it is not a bank-select effect off the low address bits.
-5. *Stationary read direction.* Reading the tile backwards via `tile.reverse(dim=0)`,
-   as the attention kernel does, gives the same bad rows. It does confirm the transform
-   model — with the reversed read the survivors match `rev_cols(A)` exactly as predicted.
+- D-112 is reversed. `GemmExecPlan` earns its place: correctness at every array size for
+  zero extra cycles. It is now the default in `rpu_gemm.py`.
+- D-110's retraction was itself over-broad. "The existing instructions do compute a
+  general GEMM" holds only at 4x4, and only because of the seed.
+- This is a latent **upstream** hazard, not merely ours. Any future instruction that
+  asserts `acc_ui` without driving the comparators inherits it, and on silicon the
+  power-on state is arbitrary but fixed — it would present as persistently wrong results
+  rather than as noise. Worth reporting to VCA-EPFL.
+- `--func 2` is kept selectable so the contrast remains the regression test.
 
-**Localised.** The corruption is *positional in the accumulator*, not in the operands or
-the store:
-
-- `B = I`, `A = I`, and `A = B = I` all give the same bad rows, so it tracks neither
-  operand.
-- Storing the same accumulator tile twice into two different buffers gives
-  **bit-identical** results, both corrupted, so the store path is faithful and the
-  accumulator content is already wrong.
-- A row of `C^T` is one drain time step, so drain steps 3 and 11 are the ones going bad.
-
-**Best remaining hypothesis: an upstream defect that attention never exposes.**
-`ATTN_VALUE`'s drain is only ever exercised downstream of `ATTN_SCORE`, whose
-online-softmax chain is long and which leaves the comparator and accumulator in a
-specific state. Upstream's own suite cannot see this: `main.py` at 16x16 passes, and it
-always issues `ATTN_SCORE` first. Our GEMM is the first code to drive `ATTN_VALUE`
-directly at an array size above 4x4. If that is right, the fix is in the RTL rather than
-in the kernel, and it is worth reporting upstream.
-
-**Consequence.** Gate B is **not closed**, at any size. A gate that passes on the
-smallest configuration and fails on the next one up has not demonstrated the property it
-exists to demonstrate. The 4x4 results remain valid as far as they go and are not
-evidence about the array in general.
+**Method note.** Five hypotheses were refuted before this one landed, and the probe that
+cracked it was the cheapest: change one instruction in the sequence and see whether the
+symptom moves. The seed sweep then converted a plausible story into proof. When a
+symptom is deterministic but has no structural explanation, vary the *randomness source*
+early — it separates "uninitialised" from "miscomputed" in one run.

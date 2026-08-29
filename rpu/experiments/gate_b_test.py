@@ -51,7 +51,7 @@ def check(name: str, config: str, rows: int, cols: int, m: int, n: int, k: int,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="RpuGemm4X4Fp16Config")
-    ap.add_argument("--func", type=int, default=G.ATTN_VALUE_FUNC,
+    ap.add_argument("--func", type=int, default=G.GEMM_FUNC,
                     help="2 = ATTN_VALUE (upstream), 5 = GemmExecPlan (ours)")
     ap.add_argument("--seed", type=int, default=0)
     # fp16 operands into an fp32 accumulator. Error grows with K, so the tolerance is
