@@ -860,3 +860,45 @@ recorded as such.
 **Still open in phase 3:** §5.3's two µcode variants (static max-bound, FLASH-D), §5.6
 update engine (blocked on DECIDE-10, the update-engine ISA doc, which does not exist),
 §6 memory semantics, §7 named state, §8 chunk execution, and L2/L3 conformance.
+
+---
+
+## D-119 — Phase 4: elementwise ops have no direct expression on the array; three options costed
+
+**Date:** 2026-08-29 · **Roadmap phase:** 4 · **Status:** analysis adopted, RTL option open
+
+**Finding.** FSA's PE computes `reg * l_input + c` with partial sums flowing down a
+column, so a column performs a length-`rows` *contraction*. Per-channel elementwise
+multiply — needed by adaLN modulation and the gated residual, both twice per DiT block —
+has no direct expression. The obvious mapping, "row 0 multiplies and the rest pass
+through", is **not expressible**: `ControlGen.FlowRange.update` loops
+`for row <- 0 until rows` on every primitive, so there is no per-row control.
+
+**Options, in `rpu/PHASE4_MODULATION.md`.** (A) diagonal matmul — no RTL change, but
+**99.2% of MACs wasted** at 128x128, and it inflates exactly the utilisation and J/block
+numbers phase 6 exists to measure; (B) fold the scale into adjacent weights — exact and
+free, implemented and tested as `fold_scale_into_weights`, but the scales are per-step
+and the RPU streams 4-bit weights from DRAM, so folding rewrites the weight stream every
+step and defeats weight streaming; (C) add a row-restricted `FlowRange` plus an
+elementwise plan — a bounded control change, with `ControlGen.optimize()` as the risk and
+its `verify()` as the safety net.
+
+**Recommendation: C for the RPU, A for bring-up only with the waste quoted.** B stays on
+the table if conditioning turns out to be chunk-static, since zero-cost is hard to beat.
+
+**Measured, not assumed: the `exp2Done` hazard does not fire today.** PARANOIA rule 8
+flagged `PE.scala:55` as unreset with an undocumented ordering precondition, and phase 4
+drives `exp2` through GELU and softmax. Checked: `ATTN_SCORE` fires `mac` at cycle 1,
+which clears `exp2Done` long before `exp2` at cycle `2*rows+4`, and attention results are
+**identical across RTL seeds 1, 7 and 12345**. So the precondition is self-satisfied by
+that plan. **The constraint transfers**: any new plan driving `exp2` must fire a
+non-`exp2` PE control first.
+
+**A trap noted for LayerNorm.** Its mean is a contraction against a ones-vector, which
+the array does natively — but its variance needs a sum of *squares*, so it hits the same
+elementwise problem. LayerNorm is not "free because the array reduces".
+
+**Golden side is done regardless of the RTL choice.** `modulate`, `gated_residual`,
+`layernorm_fp32`, `gelu_tanh_fp32` and both folding identities are implemented and
+tested, matching the pinned DiT-XL/2 forms exactly. Whichever mapping wins has something
+exact to be verified against.

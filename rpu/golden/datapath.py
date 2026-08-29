@@ -161,3 +161,57 @@ def flop_shares(d: int, d_ff: int, n_ctx: int, n_new: int, n_text: int) -> dict:
     return {"qkv": qkv / total, "self_attention": self_attn / total,
             "output_projection": out_proj / total, "cross_attention": cross / total,
             "ffn": ffn / total}
+
+
+# --- 5.4/5.5 conditioning: modulation and gated residual ----------------------------
+#
+# These are the ops roadmap phase 4 adds. Numerically they are trivial; the whole
+# difficulty is where they run (see rpu/PHASE4_MODULATION.md). Having them here in the
+# golden means the RTL mapping, whichever option is chosen, has something exact to be
+# checked against.
+
+def modulate(x: list[list[float]], shift: list[float], scale: list[float]):
+    """adaLN-Zero: `x * (1 + scale) + shift`, per channel, FP32 internal (§5.4).
+
+    Matches the pinned DiT-XL/2 form exactly: `models.py` defines
+    `modulate(x, shift, scale) = x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)`.
+    """
+    C = len(x[0])
+    if len(shift) != C or len(scale) != C:
+        raise ValueError(f"per-channel params must be length {C}")
+    return [[np.float32(np.float32(v) * np.float32(1.0 + scale[c]) + np.float32(shift[c]))
+             for c, v in enumerate(row)] for row in x]
+
+
+def gated_residual(x: list[list[float]], branch: list[list[float]],
+                   gate: list[float]):
+    """adaLN-Zero gated residual: `x + gate * branch`, gate per channel (§5.5)."""
+    C = len(x[0])
+    if len(gate) != C:
+        raise ValueError(f"gate must be length {C}")
+    return [[np.float32(np.float32(xv) + np.float32(gate[c]) * np.float32(bv))
+             for c, (xv, bv) in enumerate(zip(xr, br))]
+            for xr, br in zip(x, branch)]
+
+
+def fold_scale_into_weights(W: list[list[Fraction]], scale: list[float],
+                            side: str) -> list[list[Fraction]]:
+    """Option B of the phase-4 mapping: fold a per-channel scale into a weight matrix.
+
+    `(x * s) @ W == x @ (diag(s) @ W)` -- row-scaling, `side="in"`.
+    `g * (c @ W) == c @ (W @ diag(g))`  -- column-scaling, `side="out"`.
+
+    Exact, and costs zero array operations. Its problem is architectural, not
+    numerical: the RPU streams 4-bit weights from DRAM and these scales are recomputed
+    per step from the conditioning vector, so folding rewrites the weight stream every
+    step. See rpu/PHASE4_MODULATION.md.
+    """
+    if side == "in":
+        if len(scale) != len(W):
+            raise ValueError("input-side scale must match W's rows")
+        return [[Fraction(float(scale[k])) * v for v in row] for k, row in enumerate(W)]
+    if side == "out":
+        if len(scale) != len(W[0]):
+            raise ValueError("output-side scale must match W's columns")
+        return [[Fraction(float(scale[c])) * v for c, v in enumerate(row)] for row in W]
+    raise ValueError(f"side must be 'in' or 'out', got {side!r}")

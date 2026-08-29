@@ -12,7 +12,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import ExpImpl, ProbPrecision, working_assumption          # noqa: E402
 from datapath import (FLOP_SHARES, dequant_row, flop_shares,           # noqa: E402
-                      gelu_tanh_fp32, layernorm_fp32, matmul_fp8,
+                      fold_scale_into_weights, gated_residual,
+                      gelu_tanh_fp32, layernorm_fp32, matmul_fp8, modulate,
                       online_softmax, quantize_probs)
 from formats import encode_fp8                                          # noqa: E402
 
@@ -130,7 +131,51 @@ def test_flop_share_checksum() -> None:
           f"worst deviation {worst:.4f}")
 
 
+def test_conditioning() -> None:
+    """Phase 4's ops: adaLN modulation and the gated residual."""
+    print("\nphase 4 conditioning ops")
+    x = [[1.0, 2.0], [3.0, 4.0]]
+    shift, scale, gate = [0.5, -0.5], [1.0, 0.0], [2.0, 0.0]
+    m = [[float(v) for v in r] for r in modulate(x, shift, scale)]
+    check("modulate is x*(1+scale)+shift per channel",
+          m == [[2.5, 1.5], [6.5, 3.5]], str(m))
+    g = [[float(v) for v in r] for r in gated_residual(x, [[1.0, 1.0], [1.0, 1.0]], gate)]
+    check("gated residual is x + gate*branch per channel",
+          g == [[3.0, 2.0], [5.0, 4.0]], str(g))
+    check("a zero gate is the identity on x",
+          [[float(v) for v in r] for r in
+           gated_residual(x, [[9.0, 9.0], [9.0, 9.0]], [0.0, 0.0])] == x)
+
+
+def test_weight_folding_identity() -> None:
+    """Option B: folding a per-channel scale into weights must be mathematically exact."""
+    print("\nphase 4 option B: fold scale into weights")
+    cfg = working_assumption()
+    pad = lambda rows_: rows_ + [[Fraction(0)] * len(rows_[0])] * (8 - len(rows_))
+    X = [[Fraction(1), Fraction(2)] + [Fraction(0)] * 6]
+    W = pad([[Fraction(1), Fraction(1)], [Fraction(2), Fraction(3)]])
+    s = [3.0, 5.0] + [1.0] * 6
+
+    # (x * s) @ W  ==  x @ (diag(s) @ W)
+    Xs = [[Fraction(float(s[k])) * v for k, v in enumerate(X[0])]]
+    lhs = matmul_fp8(Xs, W, cfg, requantize=False)
+    rhs = matmul_fp8(X, fold_scale_into_weights(W, s, "in"), cfg, requantize=False)
+    check("input-side folding is exact",
+          [[float(v) for v in r] for r in lhs] == [[float(v) for v in r] for r in rhs],
+          f"{[float(v) for v in lhs[0]]}")
+
+    # g * (x @ W) == x @ (W @ diag(g))
+    g = [2.0, 4.0]
+    base = matmul_fp8(X, W, cfg, requantize=False)
+    lhs2 = [[np.float32(g[c] * float(v)) for c, v in enumerate(base[0])]]
+    rhs2 = matmul_fp8(X, fold_scale_into_weights(W, g, "out"), cfg, requantize=False)
+    check("output-side folding is exact",
+          [float(v) for v in lhs2[0]] == [float(v) for v in rhs2[0]],
+          f"{[float(v) for v in rhs2[0]]}")
+
+
 for t in (test_dequant_row, test_matmul, test_softmax_order_is_contract,
+          test_conditioning, test_weight_folding_identity,
           test_decide5_refuses_to_guess, test_decide6_flag_is_real,
           test_vector_unit, test_flop_share_checksum):
     t()
