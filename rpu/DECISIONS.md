@@ -1063,3 +1063,40 @@ gaps, not bugs — nothing upstream generates an FP8 config.
 functional golden → numerical golden → RTL. The numerical golden targets FP4/FP8 while
 the RTL was fp16-only, so the chain's bit-exact arrow had no common format. FP8 closes
 half that gap today; MXFP4 remains the open half.
+
+---
+
+## D-123 — Phase 5: the verification chain runs end to end, with both arrow types honoured
+
+**Date:** 2026-08-29 · **Roadmap phase:** 5 · **Status:** simulation legs closed
+
+**Result.** `rpu/experiments/phase5_chain.py` runs one real DiT-XL/2 block through
+`functional golden → numerical golden ↔ RTL`, stage by stage, on operands from the
+phase-1 trace. `RpuGemm16X16Fp16Config`, slice of 16 tokens x 16 output channels at
+**full K = 1152**:
+
+| stage | vs functional golden (tolerance arrow) | vs numerical golden (exact arrow) |
+|---|---|---|
+| adaLN modulate | rel 1.342e-03 | — (vector op) |
+| qkv accumulator (§9c) | rel 3.311e-04 | **BIT-EXACT** |
+| qkv + bias | rel 4.097e-04 | — |
+| mlp_fc1 accumulator (§9c) | rel 1.816e-04 | **BIT-EXACT** |
+| layernorm mean | rel 4.788e-05 | native contraction |
+
+**The point is the two columns, not the pass.** The roadmap draws `──►` from the
+PyTorch golden and `◄──►` between the numerical golden and RTL, and this is the first
+artifact that checks each with its own semantics: a *bound* on the first, *equality* on
+the second. The fp16 quantization loss is reported rather than absorbed into a
+tolerance, and the bit-exactness is asserted rather than approximated. Conflating them
+is the failure D-116 caught, and this gate is built so it cannot recur.
+
+**Honest scope.** Not the whole block. Attention is absent — DiT-XL/2's `d_head = 72`
+does not tile on a 16-row array (D-115), and it needs the 8-row config. GELU is absent
+by design (D-121, gate 1). Residual adds and the bias are vector operations, not array
+work. The FPGA leg is SKIP, so **phase 5 as the roadmap words it is not closed** —
+`gate-phase5.sh` says so in its own output rather than leaving the caveat to a summary.
+
+**What it does establish.** Every linear stage of a real DiT block, on real checkpoint
+operands, at full contraction depth, is bit-exact against a model of the hardware's own
+arithmetic — and the divergence from fp32 PyTorch is quantization, quantified, at
+1e-4 to 1e-3.
