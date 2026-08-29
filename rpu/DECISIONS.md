@@ -454,10 +454,22 @@ reading any conformance gate: passing says what ran, not what works.
 
 **The fix.** `AccConstIdx` offers only `ZERO`, so there is no constant 1.0 to read.
 Added `SetAccScale` (func 6) — `readAccRAM` + `SET_SCALE`, structurally
-`AttentionLseNormScale` without the reciprocal — and the host DMAs 1.0 into one
-accumulator row before the k loop. `accRows` is `1 + rows`, so the C tile plus this one
-scale row fill it exactly; the spare row attention uses for the log-exp-sum is precisely
-what a GEMM needs for its scale.
+`AttentionLseNormScale` without the reciprocal.
+
+The first attempt had the host DMA a row of 1.0 into accumulator SRAM. **That hangs the
+simulator.** `DMAInstructionSRAM.isAccum` is declared in the instruction bundle and read
+*nowhere* in the RTL — `grep -rn '\.isAccum' generators/fsa/src` returns nothing — so a
+DMA targeting the accumulator never completes and its semaphore is never released. The
+attention kernel only ever stores *out* of the accumulator, so upstream never exercises
+that direction. This is also why the harness now passes a bounded `max_cycles` instead
+of `0`: with unlimited cycles a deadlock hangs forever rather than failing.
+
+The working approach computes the 1.0 row **on the array**. A GEMM with `A[:, 0] = 1`
+and `B[0, :] = 1` produces exactly all-ones, every value exactly representable in fp16,
+so the primed scale is 1.0 and not 1.0 ± an ulp. `SET_SCALE` then reads one row of it.
+It writes into the same `c_acc` tile the real GEMM uses — `accRows = 1 + rows` does not
+fit two `(rows, cols)` tiles — and the first real k-tile sets `zero=True` and overwrites
+it.
 
 **What this does and does not say about `GemmExecPlan`.** D-110 required the new plan to
 justify itself on measurements rather than necessity. This does **not** rescue it: the
