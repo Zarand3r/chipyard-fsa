@@ -1880,3 +1880,46 @@ is open — a test asserts that absence, so a later default cannot be added sile
 
 **Phase 3 remaining:** §8 chunk execution (the superloop), §5.6 update engine (blocked on
 DECIDE-10, whose ISA document does not exist), and the §5.3 softmax variants.
+
+---
+
+## D-139 — §8 chunk execution: the golden model's last unblocked section
+
+**Date:** 2026-08-29 · **Roadmap phase:** 3 · **Status:** delivered
+
+**`rpu/golden/chunk.py`** implements §8's superloop in the normative order: ingest and
+encode, fresh-token K/V against the ring window, `S(mode)` DiT steps with an F2-shared
+weight stream, action head, commit. It owns *ordering and trace*; `datapath.py` supplies
+values and `state.py` supplies the L2/L3 objects. 17 checks, all passing.
+`check-golden.sh` now runs **108**.
+
+**Chunk purity is enforced structurally, not asserted.** §7 says a chunk is a pure
+function of `(state, fresh tokens, mode)` and that *"that property is itself a
+conformance test"*. `run_chunk` copies the state and returns a new one rather than
+mutating, so the test can run the same chunk twice from the same state and compare —
+which it does, on both the resulting state and the emitted trace. A version that mutated
+in place would make the property untestable rather than false, which is the worse
+failure.
+
+**F2 is checked where it can actually be violated.** For Quality mode: 36 weight reads
+for 3 steps x 12 blocks, with `branches = 2`. The branch loop must not appear in that
+count, and the test asserts `steps x blocks` rather than `steps x blocks x branches` —
+so a future implementation that fetches per branch fails here as well as against the
+D-138 mutant.
+
+**Three open decisions raise instead of guessing**, extending `config.py`'s discipline
+into the superloop:
+
+| decision | what raises |
+|---|---|
+| DECIDE-12 (VAE encoder scope) | `encode_tokens` — §8.1's working assumption is upstream, so `run_chunk` takes encoded tokens |
+| DECIDE-10 (update engine ISA) | `update_engine` — the document does not exist |
+| DECIDE-9 (Deadline guidance) | `run_chunk` in Deadline mode — the branch count is unknown |
+
+Each is a place where a plausible default would have been easy and would have quietly
+become an architectural commitment.
+
+**Phase 3 status.** L1 value conformance, L2 trace and L3 state are implemented for the
+sections that are not blocked. What remains is blocked, not unattempted: §5.6 (DECIDE-10),
+§5.3's two µcode softmax variants, and the DECIDE-1/2/3/5/6 numerics choices that gate
+full L1. The golden model is now as complete as the open decisions permit.
