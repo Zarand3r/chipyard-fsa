@@ -49,6 +49,9 @@ GEMM_FUNC = 5          # must match RpuMxFunc.GEMM in rpu/GemmExecPlan.scala
 SET_ACC_SCALE_FUNC = 6 # must match RpuMxFunc.SET_ACC_SCALE
 
 
+WAIT_PREV_ACC = True   # see D-129; set False to let k-tile DMAs prefetch
+
+
 def mx_gemm(func: int, b_t: STile, c_t: ATile, accumulate: bool, sem, aq=True, rl=True) -> None:
     """One matrix instruction: C = reg @ B, or C += reg @ B when `accumulate`.
 
@@ -62,7 +65,8 @@ def mx_gemm(func: int, b_t: STile, c_t: ATile, accumulate: bool, sem, aq=True, r
     """
     ctx = getattr(_K, "__g_kernel_ctx")
     assert ctx is not None, "mx_gemm must be called inside an @F.kernel function"
-    header = _K.build_matrix_instruction_header(func, accumulate, sem, aq, rl)
+    header = _K.build_matrix_instruction_header(
+        func, accumulate and WAIT_PREV_ACC, sem, aq, rl)
     spad = MatrixInstructionSpad(ctx.tile_row_addr(b_t), ctx.tile_stride(b_t), True, False, True)
     acc = MatrixInstrucionAcc(ctx.tile_row_addr(c_t), ctx.tile_stride(c_t), not accumulate)
     ctx.push(MatrixInstruction(header, spad, acc))
@@ -171,13 +175,23 @@ def build_kernel(func: int, shape: Shape):
 
         for mi in range(s.mt):
             for ni in range(s.nt):
+                # Software pipelining, prefetch distance 1.
+                #
+                # Issuing `load_tile` immediately before the instruction that consumes
+                # it gives ZERO prefetch distance: the MX op waits on its own DMA every
+                # time, which is where D-128's 56-88% mxBubble comes from. Double
+                # buffering the tiles does nothing on its own -- the *issue order* is
+                # what has to change. Loads for k+1 are issued before the MX ops for k,
+                # so a transfer overlaps a compute.
+                if s.kt:
+                    F.load_tile(A_tiles[mi * s.kt], a_buf[0], sem_a[0])
+                    F.load_tile(B_tiles[ni], b_buf[0], sem_b[0])
                 for ki in range(s.kt):
-                    buf = ki % 2
-                    a_mem = A_tiles[mi * s.kt + ki]
-                    b_mem = B_tiles[ki * s.nt + ni]
-                    F.load_tile(a_mem, a_buf[buf], sem_a[buf])
+                    buf, nxt = ki % 2, (ki + 1) % 2
+                    if ki + 1 < s.kt:
+                        F.load_tile(A_tiles[mi * s.kt + ki + 1], a_buf[nxt], sem_a[nxt])
+                        F.load_tile(B_tiles[(ki + 1) * s.nt + ni], b_buf[nxt], sem_b[nxt])
                     F.mx_load_stationary(a_buf[buf], sem_a[buf])
-                    F.load_tile(b_mem, b_buf[buf], sem_b[buf])
                     mx_gemm(func, b_buf[buf], c_acc, ki > 0, sem_b[buf])
                 # Drain the matrix engine before reading the accumulator out.
                 #

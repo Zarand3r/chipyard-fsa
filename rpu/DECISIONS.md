@@ -1339,3 +1339,55 @@ identified and the model is not yet accurate enough to claim <5% worst-case.
 
 **The FPGA correlation leg is SKIP** (D-102), so phase 9 as the roadmap words it —
 simulator ↔ RTL ↔ FPGA — is not closed.
+
+---
+
+## D-129 — Two optimisations tested and refuted; the stall is scratchpad depth, and Gate B predicted it
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** measured; the fix is a capacity change
+
+**Context.** D-128 found the tiled GEMM is latency-bound — `mxBubble` is 56-88% of
+runtime at ~66 cycles per DMA — and hypothesised `waitPrevAcc` serialisation as the
+cause. Two candidate fixes were tested.
+
+**1. Remove `waitPrevAcc`. No effect.** It was set while chasing D-111, *before* the
+real cause (the unreset accumulator scale) was found, and I noted at the time it did not
+fix anything. It also does not cost anything:
+
+| shape | with | without |
+|---|---|---|
+| k x4 | execTime 870, bubble 712 | 870, 712 |
+| m x n x k | 1651, bubble 1445 | 1651, 1449 |
+
+Correctness identical. **D-128's hypothesis is withdrawn.**
+
+**2. Software-pipeline the k loop (prefetch distance 1). No effect.** Issuing the loads
+for tile k+1 before the MX ops for tile k, into the second buffer: execTime 562 / 870 /
+1651 and bubbles 428 / 712 / 1445 — **identical to the unpipelined kernel, to the
+cycle**.
+
+**Why, quantitatively.** The k loop is a serial dependency chain: every k-tile
+accumulates into the same accumulator tile, so the MX engine cannot run ahead. Prefetch
+distance 1 buys one iteration of overlap, which at ~12 cycles per k-iteration hides
+about 12 of the ~66-cycle DMA latency. Hiding it fully needs a prefetch distance of
+roughly `66/12 ≈ 6` iterations — that is **6+ buffers, not 2**.
+
+And that does not fit. `Configs.defaultFSAParams` sizes the scratchpad as
+`spadRows = 2*cols + 4*rows`, which is 24 rows at 4x4 — exactly six 4-row tiles, for
+*both* operands together. The scratchpad cannot hold enough tiles in flight to cover its
+own memory latency.
+
+**This is Gate B's claim 5, arriving.** `GATE_B_FEASIBILITY.md` predicted before any of
+this ran: *"the scratchpad and accumulator sizing is the part that actually costs
+time"*, flagged as the claim most likely to be wrong in the expensive direction. It was
+right, and for a reason the note did not anticipate: not capacity for correctness, but
+**capacity for latency hiding**.
+
+**Consequence.** The GEMM kernel is not the problem and no kernel-level scheduling fixes
+it. The lever is `spadRows` — a `FSAParams` change, cheap to try — and the experiment is
+well defined: raise the scratchpad allocation, deepen the prefetch, and watch `mxBubble`.
+That is the next phase-9 step, and it is also the one that decides whether any
+utilisation or J/block figure from this design is worth quoting (D-128).
+
+**Kept, not reverted.** The pipelined kernel is neutral at distance 1 and is the correct
+structure for a deeper prefetch, so it stays with this measurement recorded beside it.
