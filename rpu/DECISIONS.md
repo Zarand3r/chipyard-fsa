@@ -1831,3 +1831,52 @@ magnitudes, so a large fraction of every weight block lands there.
 (D-116, D-136, here) and the second time the fix was to demand equality and then vary
 one input property until the difference moved. Ranges are a diagnostic axis, like seeds
 and configurations.
+
+---
+
+## D-138 — L2 and L3 conformance implemented; all four §10 mutants now exist
+
+**Date:** 2026-08-29 · **Roadmap phase:** 3 · **Status:** delivered
+
+**The gap this closes.** §1 defines three conformance levels. `reduce.py` and
+`datapath.py` served **L1** only; **L2** (the memory access trace) and **L3** (state
+inspectable between chunks) had no implementation at all, and were the largest unblocked
+item left in phase 3.
+
+**`rpu/golden/state.py`** implements §7's named objects — `WEIGHT_IMAGE`, `KV_RING[L]`
+with pointers, `TEXT_KV[L]`, `DIFFUSION_LATENT`, `SCHEDULE_IMAGE`, `MODE_REG`,
+`ACTION_BUFFER` — plus §6's address map, conveyor trace and KV ring. 17 checks, all
+passing; `check-golden.sh` now runs 87.
+
+**Two places the spec dictates the *implementation*, not just the behaviour, and why.**
+
+- §6: *"No copies, no remapping — pointer arithmetic only, and the golden model must
+  implement it as such so wraparound addressing is exercised."* A ring that shifts data
+  returns identical values and is therefore invisible to any value-level test.
+- §6 F2: *"one read per weight block per step regardless of branch count."* Double-
+  fetching for the CFG pair changes nothing about the values — only the trace.
+
+Both are cases where the golden model's *construction* is the thing under test, which is
+exactly why §10 lists their negations as mutants.
+
+**All four §10 mutants are now implemented and confirmed detectable:**
+
+| mutant | detector | status |
+|---|---|---|
+| linear-order accumulation instead of the tree | §4 order vectors | D-117 |
+| running max in descending tile order | softmax sum-to-1 | D-118 |
+| double-fetched CFG weights | **L2 trace only** | here |
+| ring as memcpy | **wraparound addressing only** | here |
+
+The two added here are the ones no value comparison can catch, which is the point of
+having L2 and L3 at all. Each mutant lives in the same file as the thing it mutates, so
+it cannot rot into a test of nothing.
+
+**Kept honest about open decisions.** `weight_trace` orders blocks layer-major then
+QKV / attn-out / FFN-in / FFN-out / cross-attn, and says in its docstring that
+**DECIDE-11** (freeze the intra-layer order) is the parameter this will fix. `BRANCHES`
+deliberately has no entry for Deadline mode, because **DECIDE-9** (guidance on/off there)
+is open — a test asserts that absence, so a later default cannot be added silently.
+
+**Phase 3 remaining:** §8 chunk execution (the superloop), §5.6 update engine (blocked on
+DECIDE-10, whose ISA document does not exist), and the §5.3 softmax variants.
