@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 
@@ -257,7 +258,42 @@ def load_config(config: str) -> tuple[int, int]:
     return cfg.sa_rows, cfg.sa_cols
 
 
-def make_engine(config: str):
+# --- paranoia: RTL random-seed injection -------------------------------------------
+# D-113 was uninitialised state hiding behind a fixed $random seed. Varying the seed is
+# the general detector for that whole class, so the harness can force one.
+_real_run = subprocess.run
+_asserts: list[str] = []
+
+
+def _wrap_subprocess(vseed: int | None) -> None:
+    def runner(cmd, *a, **kw):
+        if isinstance(cmd, list) and cmd and "simulator-chipyard" in str(cmd[0]):
+            if vseed is not None:
+                cmd = list(cmd) + [f"+verilator+seed+{vseed}"]
+            kw.setdefault("capture_output", True)
+            kw.setdefault("text", True)
+            r = _real_run(cmd, *a, **kw)
+            out = (r.stdout or "") + (r.stderr or "")
+            # Verilator is built with --assert; a firing assertion is a hardware
+            # contract violation and must never be scrolled past.
+            for line in out.splitlines():
+                if "ssertion" in line or "%Error" in line:
+                    _asserts.append(line.strip())
+            return r
+        return _real_run(cmd, *a, **kw)
+    subprocess.run = runner
+
+
+def assertions() -> list[str]:
+    return list(_asserts)
+
+
+def clear_assertions() -> None:
+    _asserts.clear()
+
+
+def make_engine(config: str, vseed: int | None = None):
+    _wrap_subprocess(vseed)
     sim = f"../../../sims/verilator/simulator-chipyard.harness-{config}"
     if not os.path.isfile(sim):
         raise SystemExit(f"simulator binary not found: {sim}")

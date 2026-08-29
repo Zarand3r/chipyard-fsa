@@ -588,3 +588,46 @@ cracked it was the cheapest: change one instruction in the sequence and see whet
 symptom moves. The seed sweep then converted a plausible story into proof. When a
 symptom is deterministic but has no structural explanation, vary the *randomness source*
 early — it separates "uninitialised" from "miscomputed" in one run.
+
+---
+
+## D-114 — Standing paranoia protocol, and an audit of unreset state
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** adopted
+
+**Decision.** `rpu/PARANOIA.md` is the standing protocol, and its rules are enforced by
+`rpu/scripts/gate-b.sh` rather than left to discipline: every gate runs **three array
+sizes** and **three RTL random seeds**, and a firing Verilator assertion fails the case.
+
+**Reason.** Four defects in one phase shared one shape — *silent, deterministic,
+plausible wrong answers* that read as our own bug. Two of them (D-110, D-112) were
+misdiagnosed as our error before the real cause surfaced. Rules that live only in a
+report get skipped; rules wired into the gate do not.
+
+**The audit.** `grep -n "= Reg(" --include=*.scala` over the FSA RTL found five unreset
+registers and two comments openly stating a reset precondition. The one that matters
+next:
+
+```scala
+// as long as exp2 is not the first operation, exp2Done does not need to be reset
+val exp2Done = Reg(Bool())          // sa/PE.scala:55
+```
+
+That is **D-113's exact shape, unfired**: unreset state guarded by an undocumented
+ordering assumption. Roadmap phase 4 adds GELU and softmax, which drive `exp2`. Check it
+before debugging any wrong answer there.
+
+The full table is in `PARANOIA.md` §7 and covers `pipe_no_reset` (D-113), `PE.reg`,
+`Accumulator.scale` (D-111), and three unaudited DMA/decoder buffers.
+
+**Measured effect.** Gate B at 16x16 across `$random` seeds 1, 7 and 12345 gives
+**identical** rel err per case, which is the positive statement that the result does not
+depend on power-on state. Before D-113's fix the same sweep moved the corrupted rows
+every time.
+
+**Cost.** 3 configs x 7 cases x 3 seeds = 63 simulator runs per gate invocation instead
+of 7. Minutes, not hours, and cheap against the several hours the first misdiagnosis
+cost.
+
+**Keep / revert.** Keep. Drop a rule only by deleting the incident that justifies it,
+which is not something that happens.

@@ -24,12 +24,13 @@ import rpu_gemm as G                                                  # noqa: E4
 
 
 def check(name: str, config: str, rows: int, cols: int, m: int, n: int, k: int,
-          func: int, seed: int, tol: float) -> bool:
+          func: int, seed: int, tol: float, vseed: int | None = None) -> bool:
     # Fresh FSA state per case: allocations are never freed and a raised kernel leaves
     # the kernel context set. See rpu_gemm.reset().
     G.reset()
+    G.clear_assertions()
     G.load_config(config)
-    engine = G.make_engine(config)
+    engine = G.make_engine(config, vseed=vseed)
     rng = np.random.default_rng(seed)
     A = rng.normal(size=(m, k)).astype(np.float16)
     B = rng.normal(size=(k, n)).astype(np.float16)
@@ -42,9 +43,13 @@ def check(name: str, config: str, rows: int, cols: int, m: int, n: int, k: int,
     rel = float(np.abs(got.astype(np.float64) - ref.astype(np.float64)).max()
                 / max(np.abs(ref).max(), 1e-30))
     s = G.Shape(m, n, k, rows, cols)
-    ok = rel < tol
-    print(f"  {'PASS' if ok else 'FAIL'}  {name:<34} "
+    fired = G.assertions()
+    ok = rel < tol and not fired
+    tag = f" vseed={vseed}" if vseed is not None else ""
+    print(f"  {'PASS' if ok else 'FAIL'}  {name:<30}{tag:<12} "
           f"[{m}x{k}]@[{k}x{n}]  {s.stationary_loads:>5} loads  rel {rel:.3e}")
+    for line in fired[:3]:
+        print(f"        RTL ASSERTION: {line}")
     return ok
 
 
@@ -57,6 +62,10 @@ def main() -> int:
     # fp16 operands into an fp32 accumulator. Error grows with K, so the tolerance is
     # derived from the contraction length rather than picked to make cases pass.
     ap.add_argument("--tol", type=float, default=None)
+    ap.add_argument("--vseeds", type=str, default="",
+                    help="comma-separated Verilator $random seeds to repeat every case "
+                         "under. Uninitialised RTL state hides behind a single seed "
+                         "(D-113); this is the general detector for that class.")
     ap.add_argument("--full", action="store_true",
                     help="include the large phase-1 DiT shapes (slow)")
     args = ap.parse_args()
@@ -80,10 +89,13 @@ def main() -> int:
             ("dit qkv_proj-like",   256, 3 * 384, 1152 // R * R),
         ]
 
+    vseeds = [int(s) for s in args.vseeds.split(",") if s.strip()] or [None]
     ok = True
     for name, m, n, k in cases:
         tol = args.tol if args.tol is not None else max(1e-3, 3e-4 * (k / R) ** 0.5)
-        ok &= check(name, args.config, rows, cols, m, n, k, args.func, args.seed, tol)
+        for vs in vseeds:
+            ok &= check(name, args.config, rows, cols, m, n, k, args.func,
+                        args.seed, tol, vseed=vs)
 
     print("\nGATE B:", "all cases PASSED" if ok else "FAILED")
     return 0 if ok else 1
