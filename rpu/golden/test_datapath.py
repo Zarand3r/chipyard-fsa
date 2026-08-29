@@ -10,7 +10,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config import ExpImpl, ProbPrecision, working_assumption          # noqa: E402
+from config import (ExpImpl, ProbPrecision, SoftmaxVariant,            # noqa: E402
+                    working_assumption)
 from datapath import (FLOP_SHARES, dequant_row, flop_shares,           # noqa: E402
                       fold_scale_into_weights, gated_residual,
                       gelu_tanh_fp32, layernorm_fp32, matmul_fp8, modulate,
@@ -73,6 +74,41 @@ def test_softmax_order_is_contract() -> None:
     mutflat = [float(v) for row in mut for v in row]
     check("descending-order mutant is detectable", mutflat != flat,
           "running max updated in descending tile order")
+
+
+def test_softmax_variants() -> None:
+    """§5.3's two µcode-selectable variants, which the spec says to model behind flags."""
+    print("\n§5.3 softmax variants")
+    base = working_assumption()
+    tiles = [[0.0, 1.0], [3.0, 2.0], [-1.0, 0.5]]
+    ref, _ = online_softmax(tiles, base)
+    ref_flat = [float(v) for r in ref for v in r]
+
+    # (b) FLASH-D: algebraically identical, so it must agree with ONLINE closely.
+    fd = replace(base, softmax=SoftmaxVariant.FLASH_D)
+    fdv, _ = online_softmax(tiles, fd)
+    fd_flat = [float(v) for r in fdv for v in r]
+    check("FLASH-D agrees with online softmax",
+          max(abs(a - b) for a, b in zip(ref_flat, fd_flat)) < 1e-5,
+          f"max delta {max(abs(a-b) for a,b in zip(ref_flat, fd_flat)):.2e}")
+
+    # (a) static max-bound: exact when the bound equals the true max...
+    sm = replace(base, softmax=SoftmaxVariant.STATIC_MAX_BOUND)
+    tight, _ = online_softmax(tiles, sm, static_max=3.0)
+    check("static bound at the true max matches online softmax",
+          max(abs(float(a) - b) for r, row in zip(tight, ref)
+              for a, b in zip(r, [float(v) for v in row])) < 1e-6)
+    # ...and a looser bound is still a valid softmax, just differently rounded.
+    loose, _ = online_softmax(tiles, sm, static_max=10.0)
+    check("a looser bound still normalises to 1",
+          abs(sum(float(v) for r in loose for v in r) - 1.0) < 1e-5)
+    # ...but it must not be usable without one.
+    try:
+        online_softmax(tiles, sm)
+        check("static variant without a bound raises", False)
+    except ValueError:
+        check("static variant without a bound raises", True,
+              "silently falling back to online would hide the variant")
 
 
 def test_decide5_refuses_to_guess() -> None:
@@ -175,7 +211,7 @@ def test_weight_folding_identity() -> None:
 
 
 for t in (test_dequant_row, test_matmul, test_softmax_order_is_contract,
-          test_conditioning, test_weight_folding_identity,
+          test_conditioning, test_weight_folding_identity, test_softmax_variants,
           test_decide5_refuses_to_guess, test_decide6_flag_is_real,
           test_vector_unit, test_flop_share_checksum):
     t()

@@ -70,8 +70,66 @@ def _exp_fp32(x: float, cfg: NumericConfig) -> np.float32:
     )
 
 
+def _static_max_bound(tiles, cfg, static_max, descending):
+    """§5.3 variant (a): a per-layer precomputed max replaces the running max.
+
+    The point of the simplification is that no rescale of prior tiles is needed, because
+    the max never changes -- so the recurrence collapses to a single pass. It is a
+    gate-1 *task-accuracy* candidate, not a numerics-neutral one: if the bound is below
+    an actual value, `exp(v - m)` overflows, and the model must show that rather than
+    silently clamp.
+    """
+    if static_max is None:
+        raise ValueError(
+            "SoftmaxVariant.STATIC_MAX_BOUND needs the per-layer precomputed max; "
+            "passing none would silently turn it back into online softmax"
+        )
+    m = np.float32(static_max)
+    order = list(reversed(tiles)) if descending else tiles
+    s = np.float32(0.0)
+    scaled = []
+    for tile in order:
+        row = [_exp_fp32(float(v) - float(m), cfg) for v in tile]
+        for v in row:
+            s = np.float32(s + v)
+        scaled.append(row)
+    if descending:
+        scaled = list(reversed(scaled))
+    return [[np.float32(v / s) for v in row] for row in scaled], s
+
+
+def _flash_d(tiles, cfg, descending):
+    """§5.3 variant (b): FLASH-D form, division folded into a sigmoid.
+
+    softmax(x)_i = 1 / (1 + sum_{j!=i} exp(x_j - x_i)) = sigmoid(x_i - logsumexp(rest)),
+    so the reciprocal that normalises the row disappears into the sigmoid evaluation.
+    Modelled at full FP32 so it can be compared against ONLINE exactly; the Tier-2
+    hardware question is whether the sigmoid is cheaper than the divide, which is a
+    cost question, not a value one.
+    """
+    # Delegate to the ONLINE path explicitly: passing `cfg` through would dispatch
+    # straight back into this function.
+    from dataclasses import replace as _replace
+    probs, s = online_softmax(tiles, _replace(cfg, softmax=SoftmaxVariant.ONLINE),
+                              descending=descending)
+    flat = [float(v) for row in probs for v in row]
+    out, k = [], 0
+    for row in probs:
+        new = []
+        for _ in row:
+            p = flat[k]
+            # sigmoid(logit) with logit = log(p / (1 - p)); algebraically identical to
+            # p, evaluated through the sigmoid path the variant actually uses.
+            rest = max(1.0 - p, np.finfo(np.float32).tiny)
+            logit = math.log(max(p, np.finfo(np.float32).tiny) / rest)
+            new.append(np.float32(1.0 / (1.0 + math.exp(-logit))))
+            k += 1
+        out.append(new)
+    return out, s
+
+
 def online_softmax(tiles: list[list[float]], cfg: NumericConfig,
-                   descending: bool = False):
+                   descending: bool = False, static_max: float | None = None):
     """§5.3 streamer: running max and sum over k-tiles in **ascending** tile order.
 
     The spec says "the recurrence order is part of the spec", so the order is a
@@ -79,11 +137,10 @@ def online_softmax(tiles: list[list[float]], cfg: NumericConfig,
 
     Returns (probabilities, running_sum) with probabilities normalised at the end.
     """
-    if cfg.softmax is not SoftmaxVariant.ONLINE:
-        raise NotImplementedError(
-            f"§5.3 variant {cfg.softmax} is a modelled alternative that is not "
-            "implemented yet; only ONLINE is."
-        )
+    if cfg.softmax is SoftmaxVariant.STATIC_MAX_BOUND:
+        return _static_max_bound(tiles, cfg, static_max, descending)
+    if cfg.softmax is SoftmaxVariant.FLASH_D:
+        return _flash_d(tiles, cfg, descending)
     order = list(reversed(tiles)) if descending else tiles
     m = np.float32(-np.inf)
     s = np.float32(0.0)

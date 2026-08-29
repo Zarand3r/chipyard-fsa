@@ -1923,3 +1923,48 @@ become an architectural commitment.
 sections that are not blocked. What remains is blocked, not unattempted: §5.6 (DECIDE-10),
 §5.3's two µcode softmax variants, and the DECIDE-1/2/3/5/6 numerics choices that gate
 full L1. The golden model is now as complete as the open decisions permit.
+
+---
+
+## D-140 — §5.3's two softmax variants implemented; and RTL is not "the hardware half"
+
+**Date:** 2026-08-29 · **Roadmap phase:** 3 · **Status:** delivered
+
+**A framing error, corrected.** I had described the program as having a finished
+"software half" with RTL as the other half. That is wrong: RTL here is Chisel that
+elaborates and simulates entirely on this machine. The real boundary is **physical
+hardware** — an FPGA board, a Jetson Thor, a PDK. MXFP4 block scaling and OCP subnormal
+handling are RTL, therefore reachable, therefore *not* excused by D-102.
+
+**§5.3's variants, which the spec explicitly says to model.** "Two µcode-selectable
+variants, modeled behind flags" — both previously raised `NotImplementedError`:
+
+- **(a) static max-bound.** A per-layer precomputed max replaces the running max, so no
+  rescale of prior tiles is needed and the recurrence collapses to one pass. It
+  **requires** the bound: passing none raises, because silently falling back to online
+  softmax would hide the variant entirely and make the gate-1 accuracy comparison
+  meaningless.
+- **(b) FLASH-D.** Division folded into a sigmoid evaluation. Algebraically identical to
+  the online form, and measured at **max delta 0.00e+00** against it — which is the
+  right result: FLASH-D is a *cost* question (is a sigmoid cheaper than a divide), not a
+  value question, and a model that showed a value difference would be wrong.
+
+A recursion bug surfaced and was fixed: `_flash_d` delegated to `online_softmax` with the
+same config, which dispatched straight back into it. It now passes an explicitly ONLINE
+config.
+
+`check-golden.sh` runs **112**.
+
+**Remaining work that needs no physical hardware**, now stated plainly:
+
+| item | kind | status |
+|---|---|---|
+| 32x32 defect | RTL/kernel | **stuck** — debug build under way for the waveform |
+| 128x128 config | RTL | built once, never verified |
+| MXFP4 block scaling | RTL | not started; the golden reference exists |
+| OCP subnormal handling | RTL (easyfloat) | not started; D-137 showed it is required by §3 |
+| cycle model worst-case 8.9% | software | short of the <5% target |
+| §5.6, DECIDE-1/2/3/5/6 | — | blocked on decisions, not on hardware |
+
+32x32 is sequenced first because it gates the rest: a defect in the simple RTL I wrote
+would reappear at 128x128 and would contaminate any MXFP4 work built on top.
