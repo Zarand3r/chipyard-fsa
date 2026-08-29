@@ -66,20 +66,32 @@ smaller than the envelope. Where the roadmap draws a `<-->` arrow, demand equali
 model the arithmetic properly. Where a tolerance is genuinely required, it is *derived*
 and its derivation is written down.
 
-### 5. Never scroll past an assertion
+### 5. Test the artifact you just built, not the one that is lying around
+
+**Incident: D-134.** Twice in one session I waited on a log line to decide a rebuild had
+finished. The build scripts truncate their log but earlier runs leave matching `exit=`
+text, so `grep` succeeded against a *stale* line and the tests ran new Python against old
+simulators. Both rounds produced confident, wrong conclusions -- including an apparent
+regression at 4x4 that did not exist.
+
+Wait on the **artifact**: `stat -c %Y` on the simulator binary, compared against the time
+the edit was made. A log line says something happened once; a timestamp says what is
+actually on disk now.
+
+### 6. Never scroll past an assertion
 
 The Verilator build carries `--assert` and the RTL has `DelayedAssert`s on real
 contracts (e.g. `PopCount(computeFlags) <= 1`). `rpu_gemm.make_engine` captures
 simulator output and any assertion **fails the case**. Assertions must never be noise.
 
-### 6. Bound the cycle limit
+### 7. Bound the cycle limit
 
 **Incident: DMA into accumulator SRAM (D-111).** `isAccum` is declared in the DMA
 instruction bundle and read nowhere in the RTL, so the transfer never completes and the
 semaphore never releases. With `max_cycles=0` that hung silently for six minutes. Probes
 pass a bounded `max_cycles` so a deadlock fails loudly.
 
-### 7. Upstream tests cover upstream's usage only
+### 8. Upstream tests cover upstream's usage only
 
 **Incidents: D-111, D-113.** FSA's `main.py --seq_kv 4` issues one K block, so it never
 exercises accumulation at all — Gate A passed without touching the path. And
@@ -89,7 +101,7 @@ never tested.
 A passing upstream suite says what ran, not what works. Before reusing an upstream
 mechanism, ask what their tests actually drive.
 
-### 8. Ask what the state is when you arrive
+### 9. Ask what the state is when you arrive
 
 **Incident: D-113, and D-111 before it.** Both were state that someone else's
 instruction normally initialises.
@@ -113,6 +125,6 @@ before adding an instruction.
   do: build known-answer vectors before random ones. `GOLDEN_MODEL_SPEC` §10 already
   asks for must-fail mutants — those are rule 3 in the spec's own words.
 - **Phase 4 (AdaLN/GELU/modulation).** GELU or softmax will drive `exp2`. Check
-  `exp2Done` (rule 8) *before* debugging any wrong answer, and sweep seeds immediately.
+  `exp2Done` (rule 9) *before* debugging any wrong answer, and sweep seeds immediately.
 - **Phase 6 (measurement).** Every number carries its configuration (rule 1), and any
   padding is quoted with it (D-104).

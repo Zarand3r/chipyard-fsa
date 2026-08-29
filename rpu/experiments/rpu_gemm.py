@@ -46,7 +46,8 @@ _C = importlib.import_module("fsa.config")
 
 ATTN_VALUE_FUNC = 2
 GEMM_FUNC = 5          # must match RpuMxFunc.GEMM in rpu/GemmExecPlan.scala
-SET_ACC_SCALE_FUNC = 6 # must match RpuMxFunc.SET_ACC_SCALE
+SET_ACC_SCALE_FUNC = 6      # must match RpuMxFunc.SET_ACC_SCALE
+SET_ACC_SCALE_ONE_FUNC = 7  # must match RpuMxFunc.SET_ACC_SCALE_ONE
 
 
 WAIT_PREV_ACC = True   # see D-129; measured neutral
@@ -100,6 +101,19 @@ def mx_set_acc_scale(src: ATile, sem) -> None:
     header = _K.build_matrix_instruction_header(SET_ACC_SCALE_FUNC, True, sem, True, True)
     spad = MatrixInstructionSpad(0, 0, False, False, False)
     acc = MatrixInstrucionAcc(ctx.tile_row_addr(src), ctx.tile_stride(src), False)
+    ctx.push(MatrixInstruction(header, spad, acc))
+
+
+def mx_set_acc_scale_one(sem) -> None:
+    """scale <- 1.0, independent of the register's previous value (D-133).
+
+    Needs no operand and touches no SRAM: the plan drives zeros down the array from the
+    comparator row and derives the scale from them with EXP_S1/EXP_S2.
+    """
+    ctx = getattr(_K, "__g_kernel_ctx")
+    header = _K.build_matrix_instruction_header(SET_ACC_SCALE_ONE_FUNC, True, sem, True, True)
+    spad = MatrixInstructionSpad(0, 0, False, False, False)
+    acc = MatrixInstrucionAcc(0, 0, False)
     ctx.push(MatrixInstruction(header, spad, acc))
 
 
@@ -184,12 +198,10 @@ def build_kernel(func: int, shape: Shape):
         # happened to power up without a NaN in any column. The `if s.kt > 1` guard was
         # added by me during the 16x16 investigation as an isolation step and never
         # removed.
-        if True:
-            F.load_tile(ones_a, a_buf[0], sem_a[0])
-            F.mx_load_stationary(a_buf[0], sem_a[0])
-            F.load_tile(ones_b, b_buf[0], sem_b[0])
-            mx_gemm(func, b_buf[0], c_acc, False, sem_b[0])
-            mx_set_acc_scale(c_acc, sem_s)
+        # scale <- 1.0 without reading it back through a GEMM. The old ones-tile route
+        # was self-referential and reloaded NaN on any column that powered up NaN
+        # (D-133); this derives the value from zeros driven down the array instead.
+        mx_set_acc_scale_one(sem_s)
 
         for mi in range(s.mt):
             for ni in range(s.nt):

@@ -19,6 +19,7 @@ import fsa.arithmetic.FPArithmeticImpl
 object RpuMxFunc {
   def GEMM = 5.U
   def SET_ACC_SCALE = 6.U
+  def SET_ACC_SCALE_ONE = 7.U
 }
 
 /** `scale <- AccRAM[rs2.addr]`, so a GEMM can accumulate.
@@ -40,6 +41,35 @@ object RpuMxFunc {
   * 1.0 into one accumulator row by DMA and issues this instruction once before the k
   * loop. Structure mirrors `AttentionLseNormScale` without the reciprocal.
   */
+/** `scale <- 1.0`, with **no dependence on the register's previous value**.
+  *
+  * `SetAccScale` reads the value out of accumulator SRAM, which means something must
+  * have written 1.0 there -- and the only way to write it is a GEMM, whose own `ACC_SA`
+  * multiplies by the very register being initialised. If a column powers up with a NaN
+  * scale, `NaN * 0 = NaN` makes that column's "ones" a NaN and `SET_SCALE` loads the
+  * NaN straight back (D-133).
+  *
+  * This breaks the loop. `Accumulator` implements:
+  *
+  *   exp s1:  scale <- sa_in * attentionScale + 0     <- old scale not read
+  *   exp s2:  scale <- pow2(scale)
+  *
+  * so driving `sa_in = 0` and issuing the pair gives `scale = 2^0 = 1` unconditionally.
+  * Zeros are produced by holding the comparators at `PROP_ZERO` and passing them down
+  * the array with `flow_ud`, which needs no operand and no scratchpad read.
+  */
+class SetAccScaleOne(val rows: Int, val cols: Int) extends ExecutionPlan {
+  // Hold the comparator row at zero and walk it down the array.
+  setComparator(0, rows + cols, CmpControlCmd.PROP_ZERO)
+  flow_ud.flow_down(1, rows)
+  // The zeros reach the accumulator `rows + cols` cycles later (the same latency
+  // AttentionValueExecPlan's drain assumes).
+  setAccumulator(rows + cols, 1, AccumulatorCmd.EXP_S1)      // scale <- 0 * k + 0 = 0
+  setAccumulator(rows + cols + 1, 1, AccumulatorCmd.EXP_S2)  // scale <- 2^0 = 1
+  releaseSemaphore(rows + cols + 1)
+  setConflictFree(rows + cols + 1)
+}
+
 class SetAccScale(val rows: Int, val cols: Int) extends ExecutionPlan {
   readAccRAM(0, 1, None, rmw = false)
   setAccumulator(1, 1, AccumulatorCmd.SET_SCALE)
@@ -122,7 +152,8 @@ object RpuConfigs {
         ISA.MxFunc.ATTENTION_LSE_NORM_SCALE -> new AttentionLseNormScale(rows, cols, ap),
         ISA.MxFunc.ATTENTION_LSE_NORM       -> new AttentionLseNorm(rows, cols),
         RpuMxFunc.GEMM                      -> new GemmExecPlan(rows, cols),
-        RpuMxFunc.SET_ACC_SCALE             -> new SetAccScale(rows, cols)
+        RpuMxFunc.SET_ACC_SCALE             -> new SetAccScale(rows, cols),
+        RpuMxFunc.SET_ACC_SCALE_ONE         -> new SetAccScaleOne(rows, cols)
       )
     }
   )

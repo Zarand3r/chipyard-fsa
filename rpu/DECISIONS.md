@@ -1624,3 +1624,63 @@ observation plus one grep for per-column state was enough, and it was available 
 cycles earlier — the same "look at what the symptom's *shape* implicates" move that
 cracked D-113 via `B = I`. Reaching for the heavy tool is not the same as reaching for
 the right one.
+
+---
+
+## D-134 — **STUCK** on 32x32. The scale fix works; something else is size-dependent
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** stuck, isolated, not on the critical path
+
+**What was built.** `SetAccScaleOne` (func 7) sets `scale <- 1.0` with **no dependence
+on the register's previous value**, closing D-133's self-referential loop. It holds the
+comparators at `PROP_ZERO`, walks the zeros down with `flow_ud`, and derives the scale
+from them: `EXP_S1` gives `scale <- 0 * k + 0 = 0`, `EXP_S2` gives `scale <- 2^0 = 1`.
+No operand, no scratchpad read, no accumulator read.
+
+**It works — at 4x4.** All three shapes pass with the new plan and no regression:
+single 2.497e-08, k x2 5.439e-08, m x n x k 5.700e-08. The mechanism is sound.
+
+**32x32 still fails**: single `inf`, k x2 7.475e-01, m x n x k 6.908e-01.
+
+**Declaring stuck, and why.** Three review cycles on one defect. The pattern is now
+"same defect unresolved, repeated failed approach", which is the criterion. What has been
+tried and eliminated:
+
+| tried | result |
+|---|---|
+| ISA address widths | adequate (20 bits vs 8 and 6) |
+| scratchpad / accumulator capacity | 128/192 and 32/33 rows, fits |
+| `PROP_ZERO` window `rows` → `2*rows` | correct on its own terms, kept, no fix |
+| unconditional scale priming | **fixed the NaN half** (D-133), residual remains |
+| `SetAccScaleOne`, no back-dependence | works at 4x4, no effect at 32x32 |
+| upstream `main.py` at 32x32 | **passes** — the config is sound, the defect is ours |
+
+**Root-cause reasoning about the remainder.** Everything that fixed a 32x32 symptom also
+changed 4x4, and everything that works at 4x4 fails at 32x32, so the fault scales with
+`rows`/`cols` rather than with any capacity or initialisation state. The plans' cycle
+arithmetic is the prime suspect: `SetAccScaleOne` asserts `EXP_S1` at `rows + cols`,
+which is where the *first* de-skewed column arrives, but `flow_ud.flow_down(1, rows)` has
+`effEnd = 2*rows`, so at 32x32 the zero wave is still in flight when the scale is
+sampled, where at 4x4 it has essentially landed. Several plans share this shape
+(`readAccRAM(rows + cols - 1, rows)`, `setAccumulator(rows + cols, rows)`), and a
+half-cycle assumption that holds when `rows` is small need not hold when it is 32.
+
+**The unblocking action, and this time it really is the waveform.** D-132 named it, D-133
+found a cheaper win instead, and that seam is now exhausted. Concretely:
+
+```
+make -C sims/verilator debug CONFIG=RpuGemm32X32Fp16Config
+cd generators/fsa/python && uv run main.py --config RpuGemm32X32Fp16Config \
+    --vcdfile /tmp/32x32.vcd    # per FSA issue #9
+```
+
+then, on a single-tile GEMM, inspect across cycles `rows+cols-4 .. rows+cols+4`:
+`accumulator.io.sa_in`, `accumulator.io.ctrl_in.cmd`, the `scale` registers, and
+`accRAM.fullWrite.valid/data`. The one question to answer: **at the cycle `EXP_S1`
+fires, is `sa_in` actually zero?** If not, the plan's timing constant is wrong and the
+fix is arithmetic on the plan, not more experiments.
+
+**Not on the critical path.** 4x4, 8x8 and 16x16 are verified bit-exact and carry every
+result this program has claimed — Gate B, phases 5 and 7, D-131's amortisation trend.
+32x32 is a capability gap. It should not block phase 8's MXFP4 work, which is the larger
+remaining item.
