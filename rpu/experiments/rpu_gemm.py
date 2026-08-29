@@ -325,6 +325,7 @@ def load_config(config: str) -> tuple[int, int]:
 # the general detector for that whole class, so the harness can force one.
 _real_run = subprocess.run
 _asserts: list[str] = []
+_sim_output: list[str] = []
 
 
 def _wrap_subprocess(vseed: int | None) -> None:
@@ -336,6 +337,7 @@ def _wrap_subprocess(vseed: int | None) -> None:
             kw.setdefault("text", True)
             r = _real_run(cmd, *a, **kw)
             out = (r.stdout or "") + (r.stderr or "")
+            _sim_output.append(out)
             # Verilator is built with --assert; a firing assertion is a hardware
             # contract violation and must never be scrolled past.
             for line in out.splitlines():
@@ -350,8 +352,19 @@ def assertions() -> list[str]:
     return list(_asserts)
 
 
+def sim_output() -> str:
+    """Raw simulator stdout+stderr from the runs since the last clear.
+
+    The performance counters (`FSA: execTime = ...`) are printed by the simulator
+    binary, and `fsa.engine` calls subprocess.run without capturing, so they are
+    otherwise unreachable from Python. Phase 9's cycle model needs them.
+    """
+    return "\n".join(_sim_output)
+
+
 def clear_assertions() -> None:
     _asserts.clear()
+    _sim_output.clear()
 
 
 def make_engine(config: str, vseed: int | None = None):

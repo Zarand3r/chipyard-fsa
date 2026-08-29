@@ -1281,3 +1281,61 @@ the gap between that and an acceptable figure is the work a quantization pipelin
 **Not a decision.** DECIDE-1 and DECIDE-2 belong to the pre-RTL numerics study's owner.
 This is input to it, measured on real weights, together with the GELU piece-count study
 (D-121).
+
+---
+
+## D-128 — Phase 9: a descriptor-driven cycle model; and the GEMM is latency-bound
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** simulator ↔ RTL leg partially closed
+
+**Result.** `rpu/experiments/phase9_cycle_model.py` predicts `execTime` from the
+instruction schedule, calibrated on **one** shape and validated on six held out
+(`RpuGemm4X4Fp16Config`):
+
+| shape | tiles | predicted | measured | error |
+|---|---|---|---|---|
+| single tile *(calibration)* | 1x1x1 | 220 | 221 | −0.5% |
+| k x2 | 1x1x2 | 512 | 562 | −8.9% |
+| k x4 | 1x1x4 | 808 | 870 | −7.1% |
+| n x2 | 1x2x1 | 441 | 430 | +2.6% |
+| m x2 | 2x1x1 | 441 | 430 | +2.6% |
+| m x n | 2x2x1 | 882 | 848 | +4.0% |
+| m x n x k | 2x2x2 | 1617 | 1651 | −2.1% |
+
+**Against the roadmap's <5% target: mean 4.5% meets it, worst-case 8.9% does not.**
+Both are reported because the roadmap does not say which it means, and quoting only the
+favourable reading is the D-119 error.
+
+**The model is derived, not fitted.** Every term but one comes from the execution plans
+and the controller: `LoadStationary.setConflictFree(cols-1)`,
+`GemmExecPlan.setConflictFree(2*rows-2)`, `accumulateMaxCycle = 2*rows+cols`, and the
+`waitPrevAcc` serialisation that `MatrixEngineController` implements as
+`canEnq = !io.busy`. The single calibrated constant is DMA latency — a property of the
+TileLink/DRAM path, not of the array, and not derivable from the plans. Fitting all
+seven shapes would have scored well and demonstrated nothing.
+
+**The architectural finding is bigger than the model.** The counter decomposition says
+this GEMM is **latency-bound**:
+
+| shape | execTime | mxActive | mxBubble | dmaActive |
+|---|---|---|---|---|
+| single tile | 221 | 17 | 123 | 16 |
+| k x4 | 870 | 87 | 712 | 64 |
+| m x n x k | 1651 | 155 | 1445 | 124 |
+
+`mxBubble` is **56-88%** of runtime while both `mxActive` and `dmaActive` stay small.
+The array is not compute-limited and not bandwidth-limited — it is **waiting**, at
+~66 cycles per DMA instruction. This matters well beyond phase 9: D-115 counted
+83k-332k stationary loads for a full DiT GEMM, and at this issue rate that is the
+binding cost, not the arithmetic. Any energy or utilisation figure taken from this
+configuration would be measuring stalls.
+
+**The residual has a named mechanism.** k-heavy shapes are under-predicted by 7-9%
+because `waitPrevAcc` blocks the *next* tile's DMA from prefetching across the
+serialisation point, so its latency is fully exposed rather than overlapped. Closing
+that needs either a second calibrated constant — which starts being a fit — or a model
+that tracks DMA/compute overlap explicitly. The honest position is that the mechanism is
+identified and the model is not yet accurate enough to claim <5% worst-case.
+
+**The FPGA correlation leg is SKIP** (D-102), so phase 9 as the roadmap words it —
+simulator ↔ RTL ↔ FPGA — is not closed.
