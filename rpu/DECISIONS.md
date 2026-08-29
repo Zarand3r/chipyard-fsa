@@ -1143,3 +1143,47 @@ divides).
 The `d_head = 72` decision flagged in D-104 has now cost something concrete twice: it
 excludes attention from 16-row configs, and it excludes fused attention entirely. Worth
 revisiting before phase 7 commits to a full one-step DiT.
+
+---
+
+## D-125 — Phase 7 uses a tile-aligned synthetic DiT, because it is testing a different thing than phase 5
+
+**Date:** 2026-08-29 · **Roadmap phase:** 7 · **Status:** adopted
+
+**The question D-124 forced.** Phase 7 runs "a complete small one-step DiT through the
+same reusable array". DiT-XL/2's `d_head = 72` excludes fused attention at every
+power-of-two array size, so a phase-7 built on the phase-1 workload would again run
+attention as separate GEMMs and never exercise the accelerator's defining feature.
+
+**Decision.** Phase 7 uses a **small synthetic DiT with `d_head == array rows`**, so
+FSA's fused FlashAttention runs. Phase 5 keeps the real DiT-XL/2 checkpoint.
+
+**Why that is not a dodge.** The two phases establish different properties, and using
+one workload for both would weaken each:
+
+| phase | question | needs |
+|---|---|---|
+| 5 | do the *values* match a real model? | real pretrained weights, real activations — **fidelity** |
+| 7 | does the *whole pipeline* run on the array? | every op exercised, fused attention included — **completeness** |
+
+Phase 5 already answered fidelity with the real checkpoint: seven stages, four bit-exact
+against the hardware's own arithmetic (D-123, D-124). Repeating that at phase 7 adds
+nothing, while a tile-aligned config buys the one thing phase 5 could not have —
+attention running as attention rather than as two GEMMs.
+
+**Explicitly labelled.** The phase-7 model is synthetic and randomly initialised. It is
+a **pipeline test, not a fidelity claim**, and no number from it may be quoted as a
+statement about DiT-XL/2 or about model quality. D-104 rejected random weights for the
+phase-1 *workload freeze* for exactly the right reason — a golden model needs a real
+checkpoint. That reasoning does not transfer here, because phase 7 is not producing a
+golden.
+
+**Configuration.** `d_head = rows`, `heads` free, `hidden = rows * heads`, so
+`R == d == Bc` and `C == Br` hold (FSA issue #5). At `RpuGemm16X16Fp16Config` that is
+`d_head = 16`.
+
+**What this does not resolve.** The RPU's own target is `d_head = 128`
+(`GOLDEN_MODEL_SPEC` §2), which *is* tile-aligned to a 128-row array. So the mismatch is
+a property of the **bring-up workload**, not of the RPU — DiT-XL/2 is awkward, the RPU
+is not. That reframing is worth carrying into phase 8: the architecture does not inherit
+this problem.
