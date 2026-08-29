@@ -107,7 +107,19 @@ are per-channel and carry no head dimension.
    before `exp2` at cycle `2*rows+4`, and attention results are identical across RTL
    seeds 1, 7 and 12345. **The constraint transfers to any new plan**: a plan that
    drives `exp2` must fire a non-`exp2` PE control first, in the same plan.
-2. **LayerNorm needs a row reduction, and one of its terms has the same problem.** The
-   mean is a contraction against a ones-vector, which the array does natively. The
-   variance needs a sum of *squares*, i.e. an elementwise square first — option A, B or
-   C again. Do not plan LayerNorm as "free because the array reduces".
+2. **~~LayerNorm's variance has the same problem~~ — wrong, and corrected by running
+   it.** This document first claimed the variance needs an elementwise square and so
+   pays option A's tax. It does not. `sum(x_i^2)` is the dot product of a row **with
+   itself**, which is exactly what a systolic column computes:
+
+   ```
+   mean   = (x . ones) / C
+   sum_sq = (x . x)
+   var    = sum_sq / C - mean^2
+   ```
+
+   Both are native contractions at full efficiency. Measured on the array
+   (`rpu/experiments/phase4_modulate.py`, 16x16): mean exact (rel 0.0), sum-of-squares
+   rel 9.3e-08. **LayerNorm costs nothing extra.** Only the per-channel scalings —
+   modulation and the gates — pay option A's `rows`x, and D-119 measured that at +0.84%
+   of a block.

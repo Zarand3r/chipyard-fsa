@@ -920,3 +920,44 @@ elementwise problem. LayerNorm is not "free because the array reduces".
 `layernorm_fp32`, `gelu_tanh_fp32` and both folding identities are implemented and
 tested, matching the pinned DiT-XL/2 forms exactly. Whichever mapping wins has something
 exact to be verified against.
+
+---
+
+## D-120 — Phase 4 ops run on the array; LayerNorm turns out to be free
+
+**Date:** 2026-08-29 · **Roadmap phase:** 4 · **Status:** adopted
+
+**Measured on real RTL** (`rpu/experiments/phase4_modulate.py`, `RpuGemm16X16Fp16Config`,
+checked against `rpu/golden/datapath.py`):
+
+| op | mapping | result |
+|---|---|---|
+| `x * (1 + scale)` | `X @ diag(s)`, non-zero k-tile only | rel 3.10e-04 vs numpy |
+| full adaLN `x*(1+s)+shift` | above, plus a vector add | rel 2.98e-04 vs the golden |
+| row mean | `x · ones` | **exact**, rel 0.0 |
+| row sum-of-squares | `x · x` | rel 9.34e-08 |
+| variance | `sum_sq/C − mean²` | correct |
+
+No RTL assertions fired. The rel ~3e-04 on the scaled paths is fp16 rounding of the
+scale vector, not error in the mapping.
+
+**A second correction to my own analysis, in the same direction as D-119.**
+`PHASE4_MODULATION.md` claimed LayerNorm's variance "hits the same elementwise problem"
+because it needs a sum of squares. **That is wrong.** `sum(x_i²)` is the dot product of
+a row *with itself* — precisely what a systolic column computes. No elementwise square
+is required, so LayerNorm pays **nothing**: mean and sum-of-squares are both native
+contractions at full efficiency.
+
+So the phase-4 cost picture is smaller than either version of this analysis first said.
+Only the per-channel scalings — two modulations and two gates per block — pay option A's
+`rows`× tax, and D-119 measured that at **+0.84%** of a block at RPU contract shapes.
+LayerNorm, the op that looked most awkward, is free.
+
+**Pattern, now three deep.** D-119 was a ratio quoted without its base; this was an
+op assumed to need a capability it does not. Both were resolved by computing or running
+the thing rather than reasoning about it further. The cheap move each time was the one
+I skipped first.
+
+**Remaining for phase 4:** GELU on the array. Unlike the others it is genuinely
+elementwise-nonlinear, and FSA's `exp2` path in the PE is the natural vehicle — subject
+to the `exp2Done` ordering constraint measured in D-119.
