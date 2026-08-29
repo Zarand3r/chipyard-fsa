@@ -1968,3 +1968,52 @@ config.
 
 32x32 is sequenced first because it gates the rest: a defect in the simple RTL I wrote
 would reappear at 128x128 and would contaminate any MXFP4 work built on top.
+
+---
+
+## D-141 — The 32x32 waveform: the accumulator is innocent
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** two hypotheses eliminated, defect still open
+
+**The waveform D-134 named was taken.** `make debug CONFIG=RpuGemm32X32Fp16Config`,
+single-tile GEMM, 76 MB VCD, signals extracted from the `accumulator` scope.
+
+**Finding 1: `SetAccScaleOne` works.** `scale_0` traces
+`-1.4e-12` (power-on garbage) → `0.0` → **`1.0` at t=1935000**, driven by the
+`EXP_S1` / `EXP_S2` pair, and `ACC_SA` does not fire until t=3455000. The scale is
+correctly 1.0 well before it is used. Column 0 is one of the *corrupted* columns
+(D-132's bad set is `[0, 1, 4, 8, ...]`), so **the scale register is not the defect** —
+which retires the hypothesis D-133 and D-134 were both built on.
+
+**Finding 2: `ACC_SA` arithmetic is correct in the sampled window.** During `cmd = 2`
+with valid asserted, `sram_out` tracks `sa_in` exactly, one pipeline stage behind:
+
+```
+sa_in = -1.294116735458374   ->  sram_out = -1.294116735458374
+sa_in =  5.843381881713867   ->  sram_out =  5.843381881713867
+```
+
+That is `out = scale * 0 + sa_in` with `scale = 1` and the accumulator read returning
+the ZERO constant — exactly what a k=0 tile should do. Every value in the window is
+finite and plausible. **No `inf` or `NaN` is produced by the accumulator.**
+
+**So the defect is upstream or downstream of it, not in it.** The result is `inf`, but
+the accumulator neither receives nor emits one in column 0's drain window. Remaining
+candidates, now narrowed to two:
+
+1. **Later drain cycles.** Only the first ~12 distinct transitions of 135 were
+   inspected. The `inf` may appear in cycles beyond the sampled window.
+2. **The readback path.** `store_tile` → DMA → host. The accumulator content could be
+   correct and the store could read the wrong rows — which would also explain why the
+   corruption is *column*-indexed and data-independent.
+
+**Next step, concretely.** Re-parse the same VCD for the whole `ACC_SA` window and for
+`accRAM.fullWrite.addr/valid`, looking for the first non-finite value and its cycle.
+The VCD already exists at `/tmp/g32.vcd`, so this costs a parse and no rebuild. If no
+non-finite value appears anywhere in the accumulator, the defect is in the store/DMA
+readback and the 16-of-32-column pattern should map onto the DMA's beat structure.
+
+**Progress assessment.** This cycle eliminated the two hypotheses the previous three
+were built on, using the tool that was named and then deferred twice. That is real
+narrowing, not a repeated approach — but the defect remains open and 32x32 is still
+gating 128x128 and the MXFP4 work behind it.
