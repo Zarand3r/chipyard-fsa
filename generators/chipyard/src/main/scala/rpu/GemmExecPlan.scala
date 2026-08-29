@@ -9,6 +9,7 @@ package fsa
 import chisel3._
 import fsa.isa._
 import fsa.sa._
+import fsa.arithmetic.FPArithmeticImpl
 
 /** Function codes for RPU-added matrix operations.
   *
@@ -125,4 +126,20 @@ object RpuConfigs {
   // at 16x16, which land at row index == 3 (mod 8) -- see DECISIONS.md D-112.
   lazy val gemm16x16p4 = withGemm(Configs.defaultFSAParams(16, 16, 4))
   lazy val gemm128x128 = withGemm(Configs.fsa128x128)
+
+  /** FP8 element formats.
+    *
+    * `FPArithmeticImpl(mulEW, mulMW, addEW, addMW)` is width-generic -- its only
+    * constraints are `mulEW <= addEW && mulMW <= addMW` and
+    * `addEW - 1 >= log2Up(pwlPieces)`. So the OCP FP8 formats are reachable as a
+    * *parameter*, with no datapath change:
+    *
+    *   E4M3 = FPArithmeticImpl(4, 3, 8, 23)
+    *   E5M2 = FPArithmeticImpl(5, 2, 8, 23)
+    *
+    * This matters for roadmap phase 8 ("FP8 attention, FP4 linear compute"), which
+    * assumed a datapath addition. See rpu/DECISIONS.md D-122.
+    */
+  lazy val e4m3MulFp32Add = new FPArithmeticImpl(4, 3, 8, 23)
+  lazy val e5m2MulFp32Add = new FPArithmeticImpl(5, 2, 8, 23)
 }

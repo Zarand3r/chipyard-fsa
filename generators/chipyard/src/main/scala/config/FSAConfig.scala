@@ -273,3 +273,6 @@ class RpuGemm8X8Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm8x8)
 class RpuGemm16X16Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm16x16)
 class RpuGemm128X128Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm128x128)
 class RpuGemm16X16P4Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm16x16p4)
+
+// FP8 element formats -- a parameter change, not a datapath change (D-122).
+class RpuGemm16X16E4M3Config extends FSAConfig(fsa.RpuConfigs.gemm16x16, fsa.RpuConfigs.e4m3MulFp32Add)

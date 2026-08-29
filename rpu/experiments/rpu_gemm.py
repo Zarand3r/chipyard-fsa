@@ -248,7 +248,69 @@ def reset() -> None:
     setattr(_K, "__g_kernel_ctx", None)
 
 
+def _install_fp8_shims() -> None:
+    """Teach FSA's Python side the FP8 element formats.
+
+    The Scala side emits `"e_type": "e4m3"` into FSAConfig.json and `fsa/config.py`
+    does `eval(cfg["e_type"])`, but `fsa/dtype.py` only defines the name `fp8` -- so an
+    FP8 config fails with `NameError: name 'e4m3' is not defined`. Its numpy
+    conversions cover fp32 and fp16 only, for the same reason: no FP8 config existed
+    upstream to exercise them.
+
+    Both are patched here rather than in the submodule (D-106). `ml_dtypes` supplies the
+    OCP-conformant numpy dtypes, and is the same reference the golden model's format
+    tests check against.
+    """
+    import ml_dtypes
+    _dt = importlib.import_module("fsa.dtype")
+    _cf = importlib.import_module("fsa.config")
+
+    for name in ("e4m3", "e5m2"):
+        setattr(_dt, name, _dt.fp8)
+        setattr(_cf, name, _dt.fp8)      # config.py evals in its own globals
+
+    _np_of = {_dt.fp32: np.float32, _dt.fp16: np.float16,
+              _dt.fp8: ml_dtypes.float8_e4m3fn}
+    _dt.to_numpy_dtype = lambda t: _np_of[t]
+    for mod in ("fsa.tensor", "fsa.mem", "fsa", "fsa.engine"):
+        m = sys.modules.get(mod)
+        if m is not None and hasattr(m, "to_numpy_dtype"):
+            m.to_numpy_dtype = _dt.to_numpy_dtype
+
+    _orig_from = _dt.from_numpy_dtype
+
+    def from_numpy_dtype(n_type):
+        if np.dtype(n_type) == np.dtype(ml_dtypes.float8_e4m3fn):
+            return _dt.fp8
+        if np.dtype(n_type) == np.dtype(ml_dtypes.float8_e5m2):
+            return _dt.fp8
+        return _orig_from(n_type)
+
+    _dt.from_numpy_dtype = from_numpy_dtype
+    for mod in ("fsa.tensor", "fsa.mem", "fsa", "fsa.engine"):
+        m = sys.modules.get(mod)
+        if m is not None and hasattr(m, "from_numpy_dtype"):
+            m.from_numpy_dtype = from_numpy_dtype
+
+    # fsa.from_numpy calls np.finfo(array.dtype) directly, which rejects ml_dtypes
+    # ("data type not inexact"), so patch the entry point rather than the helper.
+    _fsa = importlib.import_module("fsa")
+    _orig_from_numpy = _fsa.from_numpy
+
+    def from_numpy(array: np.ndarray):
+        if np.dtype(array.dtype) in (np.dtype(ml_dtypes.float8_e4m3fn),
+                                     np.dtype(ml_dtypes.float8_e5m2)):
+            tile = _fsa.get_mem_manager().alloc_mem(array.shape, dtype=_dt.fp8)
+            tile.data = array.tobytes(order="C")
+            return tile
+        return _orig_from_numpy(array)
+
+    _fsa.from_numpy = from_numpy
+    globals()["F"].from_numpy = from_numpy
+
+
 def load_config(config: str) -> tuple[int, int]:
+    _install_fp8_shims()
     build = f"../../../sims/verilator/generated-src/chipyard.harness.TestHarness.{config}"
     cfg_file = os.path.join(build, f"chipyard.harness.TestHarness.{config}.FSAConfig.json")
     if not os.path.isfile(cfg_file):

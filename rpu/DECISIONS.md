@@ -1013,3 +1013,53 @@ reference the hardware form will be checked against.
 LayerNorm: free, native contractions (D-120). GELU: costed, mechanism identified,
 precision bounded, awaiting gate 1. The RTL for GELU is the one piece of phase 4 that
 should not be written yet.
+
+---
+
+## D-122 — FP8 needs no datapath change; MXFP4 does. Phase 8 is smaller than it looks
+
+**Date:** 2026-08-29 · **Roadmap phase:** 5/8 · **Status:** demonstrated
+
+**Finding.** `FPArithmeticImpl(mulEW, mulMW, addEW, addMW)` is **width-generic**. Its
+only constraints are `require(mulEW <= addEW && mulMW <= addMW)` and
+`require(addEW - 1 >= log2Up(pwlPieces))`. The OCP FP8 formats therefore fall out as
+parameters:
+
+```scala
+E4M3 = FPArithmeticImpl(4, 3, 8, 23)
+E5M2 = FPArithmeticImpl(5, 2, 8, 23)
+```
+
+**Demonstrated, not inferred.** `RpuGemm16X16E4M3Config` elaborates, builds, and runs.
+Its generated `FSAConfig.json` reports `"e_type": "e4m3", "a_type": "fp32"`, and a GEMM
+on real E4M3 operands gives **max rel err 3.20e-03** against an fp32 reference, with the
+leading values matching exactly. Roadmap phase 8 lists "FP8 attention" as if it were a
+datapath addition. **It is a config line.**
+
+**What is *not* free, and this is the part that matters.** §3 specifies weights as
+**MXFP4** — E2M1 elements with a shared E8M0 scale per 32-element block, so that
+"dequant = exponent add, no multiplier". FSA has **no block-scale mechanism at all**.
+`FPArithmeticImpl(2, 1, 8, 23)` satisfies the width constraints and would give FP4
+*elements*, but without a shared block exponent the dynamic range collapses — E2M1 alone
+spans 0.5 to 6, which is useless for real weights. So:
+
+| phase-8 item | actual cost |
+|---|---|
+| FP8 activations / attention | **a config parameter** — demonstrated working |
+| FP4 elements | a config parameter (untested, constraint-legal) |
+| **MXFP4 microscaling** | **a genuine datapath and weight-path addition** — block scales, per-block exponent add, and the scale plumbing to reach the PE |
+
+The golden model already implements the MXFP4 semantics exactly
+(`rpu/golden/formats.py`, validated against `ml_dtypes` on all 512 FP8 codes), so
+whatever hardware is built has an exact reference waiting.
+
+**Integration shims recorded.** FSA's Python side had never seen an FP8 config:
+`config.py` evals the format name from the JSON but `dtype.py` defines only `fp8`, and
+`from_numpy` calls `np.finfo` directly, which rejects `ml_dtypes`. Both are shimmed in
+`rpu/experiments/rpu_gemm.py` rather than in the submodule (D-106). These are upstream
+gaps, not bugs — nothing upstream generates an FP8 config.
+
+**Why this belongs in phase 5's record.** Phase 5 runs a DiT block through
+functional golden → numerical golden → RTL. The numerical golden targets FP4/FP8 while
+the RTL was fp16-only, so the chain's bit-exact arrow had no common format. FP8 closes
+half that gap today; MXFP4 remains the open half.
