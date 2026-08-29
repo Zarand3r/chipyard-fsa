@@ -1100,3 +1100,46 @@ work. The FPGA leg is SKIP, so **phase 5 as the roadmap words it is not closed**
 operands, at full contraction depth, is bit-exact against a model of the hardware's own
 arithmetic — and the divergence from fp32 PyTorch is quantization, quantified, at
 1e-4 to 1e-3.
+
+---
+
+## D-124 — Attention joins the chain, bit-exact; FSA's *fused* attention cannot take this workload
+
+**Date:** 2026-08-29 · **Roadmap phase:** 5 · **Status:** adopted
+
+**Result.** Both attention GEMMs now run in the phase-5 chain at
+`RpuGemm8X8Fp16Config`, 16 tokens x 16 channels, head 0 of the real DiT-XL/2 trace:
+
+| stage | vs functional golden | vs numerical golden |
+|---|---|---|
+| attn scores `Q@K^T` | rel 3.962e-04 | **BIT-EXACT** |
+| attn context `P@V` | rel 3.745e-04 | **BIT-EXACT** |
+
+Seven of seven chain stages pass. Four are bit-exact against a model of the hardware's
+own arithmetic.
+
+**Why as GEMMs and not as FSA attention — a hard constraint, not a convenience.**
+`VCA-EPFL/FSA` issue #5's maintainer answer states the mapping is `R == d == Bc`,
+`C == Br`: the head dimension must *equal* the array's row count, with no tiling over
+`d`. DiT-XL/2 has `d_head = 72`, so **FSA's fused FlashAttention would require a 72-row
+array** — legal (`defaultFSAParams` takes any `Int`) but a bring-up-only geometry whose
+utilisation figures transfer nowhere.
+
+As separate GEMMs the contraction tiles freely, and `72 = 9 x 8` fits an 8-row array. So
+the chain gets real attention today at the cost of not using the accelerator's defining
+feature. That is the honest trade and it is worth stating plainly: **this workload does
+not fit FSA's fused attention at any power-of-two array size** (D-115: 72's divisors
+stop at 8).
+
+Softmax runs in the golden model. FSA's fusion is an optimisation, not a correctness
+requirement, and keeping it off-array isolates the GEMM claim from the `exp2` path.
+
+**Consequence for the roadmap.** Phase 5's block coverage is now as complete as the
+hardware allows: every linear stage bit-exact, attention included. What remains is
+blocked or deferred rather than unattempted — GELU (D-121, gate 1), the FPGA leg
+(D-102), and fused attention (needs either a 72-row array or a `d_head` the array
+divides).
+
+The `d_head = 72` decision flagged in D-104 has now cost something concrete twice: it
+excludes attention from 16-row configs, and it excludes fused attention entirely. Worth
+revisiting before phase 7 commits to a full one-step DiT.
