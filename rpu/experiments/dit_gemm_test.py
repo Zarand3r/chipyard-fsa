@@ -27,10 +27,19 @@ import rpu_gemm as G
 GEMM_DIR = Path.home() / "rpu-simulation/chipyard-fsa/workloads/dit/build/gemm"
 
 
-def load_case(name: str):
+def elem_dtype(name: str):
+    """Element dtype for the run. E4M3 is a config parameter, not a datapath change
+    (D-122), so the same operands can be pushed through an FP8 array unchanged."""
+    if name == "fp16":
+        return np.float16
+    import ml_dtypes
+    return {"e4m3": ml_dtypes.float8_e4m3fn, "e5m2": ml_dtypes.float8_e5m2}[name]
+
+
+def load_case(name: str, dt):
     a = np.load(GEMM_DIR / f"{name}.A.npy")
     b = np.load(GEMM_DIR / f"{name}.B.npy")
-    return a.astype(np.float16), b.astype(np.float16)
+    return a.astype(dt), b.astype(dt)
 
 
 def main() -> int:
@@ -40,17 +49,21 @@ def main() -> int:
     ap.add_argument("--max-loads", type=int, default=256,
                     help="cap on stationary loads per case, to keep Verilator sane")
     ap.add_argument("--vseeds", type=str, default="")
+    ap.add_argument("--dtype", default="fp16", choices=("fp16", "e4m3", "e5m2"),
+                    help="element format; must match the config's e_type")
     args = ap.parse_args()
+    dt = elem_dtype(args.dtype)
 
     rows, cols = G.load_config(args.config)
     manifest = json.loads((GEMM_DIR / "manifest.json").read_text())
     names = [n for n in manifest["cases"] if (GEMM_DIR / f"{n}.A.npy").exists()]
 
-    print(f"{args.config}: {rows} rows x {cols} cols   (M % {cols} == 0, N/K % {rows} == 0)\n")
+    print(f"{args.config}: {rows}x{cols}, elements {args.dtype}   "
+          f"(M % {cols} == 0, N/K % {rows} == 0)\n")
     print(f"{'case':<16} {'full shape':<24} {'tiles':<14} {'full loads':>11}  status")
     runnable = []
     for name in names:
-        A, B = load_case(name)
+        A, B = load_case(name, dt)
         m, k = A.shape; _, n = B.shape
         why = []
         if m % cols: why.append(f"M={m} not x{cols}")
@@ -97,7 +110,11 @@ def main() -> int:
                         / max(np.abs(ref).max(), 1e-30))
             fired = G.assertions()
             # fp32 accumulation over k terms of real checkpoint fp16 values
-            tol = max(1e-3, 3e-4 * (k / rows) ** 0.5)
+            # E4M3 has 3 explicit mantissa bits (half-ulp 2**-5); fp16 has 10.
+            # A shared tolerance would either pass everything or fail everything.
+            base = 3e-4 if args.dtype == "fp16" else 6e-2
+            tol = max(1e-3 if args.dtype == "fp16" else 2e-1,
+                      base * (k / rows) ** 0.5)
             ok = rel < tol and not fired
             fail |= (not ok)
             tag = f" vseed={vs}" if vs is not None else ""

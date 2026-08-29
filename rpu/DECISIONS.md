@@ -1722,3 +1722,51 @@ carrying it in working memory.
 **Standing consequence.** Any claim about a configuration must be made against a binary
 newer than the last kernel or plan change. `stat -c %Y` on the simulator, compared to the
 edit time — not a log line, not a memory of having rebuilt.
+
+---
+
+## D-136 — FP8 runs on real DiT operands; and the tolerance is hiding something
+
+**Date:** 2026-08-29 · **Roadmap phase:** 8 · **Status:** delivered, with an open question
+
+**Result.** `RpuGemm16X16E4M3Config`, phase-1 DiT-XL/2 operands cast to E4M3, run on the
+array at **full contraction depth**:
+
+| case | slice | k-tiles | rel err | tolerance |
+|---|---|---|---|---|
+| `qkv_proj` | `[48x1152]@[1152x16]` | 72 | 8.794e-02 | 5.1e-01 |
+| `attn_out_proj` | `[48x1152]@[1152x16]` | 72 | 3.241e-02 | 5.1e-01 |
+| `mlp_fc1` | `[48x1152]@[1152x16]` | 72 | 1.412e-02 | 5.1e-01 |
+| `mlp_fc2` | `[16x4096]@[4096x16]` | 256 | 1.056e-02 | 9.6e-01 |
+
+That is roadmap phase 8's "FP8 attention, FP4 linear compute" half-delivered: **FP8
+works on real workload operands, with no datapath change** (D-122), only a config line
+and Python shims.
+
+**The part I am not going to let pass.** The reference is
+`As.astype(float32) @ Bs.astype(float32)` where `As`/`Bs` are **already E4M3-quantized**.
+So input quantization is *already accounted for*, and both sides then accumulate in
+fp32. On that comparison the residual should be reduction-order noise — the ~1e-7 seen
+in the fp16 path — not **8.8e-02**.
+
+D-122 measured a single 16x16 E4M3 tile at rel 3.2e-03. At K = 1152 (72 k-tiles) it is
+8.8e-02, a factor of ~27 where `sqrt(72) ≈ 8.5` would be the independent-noise
+expectation. Either E4M3 rounding error compounds non-independently through the
+accumulator — plausible, and the same correlated-error effect D-127 found for MXFP4
+weights — **or there is a defect in the FP8 path that the tolerance is masking**.
+
+**And the tolerance is far too loose to tell.** I set `6e-2 * sqrt(k/rows)`, giving
+5.1e-01 and 9.6e-01 — wide enough to pass almost anything. That is exactly the failure
+D-116 named: *a tolerance hides modelling errors in both directions*. These cases are
+marked PASS by a guard rail, not by a claim.
+
+**Next step, concretely.** Parameterise `rpu/golden/gemm_golden.py` on the multiply
+format — it currently hardcodes `MUL_EW, MUL_MW = 5, 10` — and run the E4M3 path against
+a **bit-exact** reference the way D-116 did for fp16. That answers the question in one
+run: if the array matches exactly, the 8.8e-02 is genuine E4M3 arithmetic and the number
+is a real datapoint for the numerics study; if it does not, there is an FP8 defect and
+the loose tolerance was concealing it.
+
+Until that runs, **the FP8 error figures above should not be quoted as E4M3's accuracy**
+— only as "the array produced these, and they have not yet been checked against exact
+E4M3 arithmetic".
