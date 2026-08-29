@@ -278,3 +278,5 @@ class RpuGemm16X16P4Fp16Config extends FSAConfig(fsa.RpuConfigs.gemm16x16p4)
 class RpuGemm16X16E4M3Config extends FSAConfig(fsa.RpuConfigs.gemm16x16, fsa.RpuConfigs.e4m3MulFp32Add)
 // D-129: 4x the scratchpad, so prefetch depth can be varied.
 class RpuGemm4X4DeepConfig extends FSAConfig(fsa.RpuConfigs.gemm4x4deep)
+// D-130: 4 independent accumulator tiles, so k-loops can be interleaved.
+class RpuGemm4X4DeepAccConfig extends FSAConfig(fsa.RpuConfigs.gemm4x4deepacc)

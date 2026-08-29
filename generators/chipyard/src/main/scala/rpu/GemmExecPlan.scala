@@ -155,6 +155,20 @@ object RpuConfigs {
 
   lazy val gemm4x4deep  = withDeepSpad(withGemm(Configs.fsa4x4), 4)   // 24 -> 96 rows
 
+  /** Accumulator deep enough for several independent output tiles (D-130).
+    *
+    * `defaultFSAParams` sets `accRows = 1 + rows` -- exactly one output tile plus the
+    * log-exp-sum row. The k loop therefore accumulates through a single tile, and each
+    * k-tile has a read-after-write dependency on the previous one, which no amount of
+    * prefetching can hide. This holds `nAcc` tiles so independent work can be
+    * interleaved.
+    */
+  def withDeepAcc(base: FSAParams, nAcc: Int): FSAParams =
+    base.copy(accRows = 1 + base.saRows * nAcc)
+
+  lazy val gemm4x4deepacc =
+    withDeepAcc(withDeepSpad(withGemm(Configs.fsa4x4), 4), 4)
+
   lazy val e4m3MulFp32Add = new FPArithmeticImpl(4, 3, 8, 23)
   lazy val e5m2MulFp32Add = new FPArithmeticImpl(5, 2, 8, 23)
 }

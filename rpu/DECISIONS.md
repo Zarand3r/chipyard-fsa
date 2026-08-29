@@ -1447,3 +1447,54 @@ change can be tested without the untracked-edit problem D-106 forbids. Patch 01 
 **kept as a file and reverted in the tree**, since carrying an applied change that
 demonstrably buys nothing is exactly the kind of unjustified complexity that later reads
 as intentional.
+
+---
+
+## D-131 — The stall explained: DMA cost is fixed per transfer, so it amortises with array size
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** root-caused; not an architectural flaw
+
+**Fifth refutation, then the answer.** D-130's named experiment — raise `accRows` to
+hold 4 output tiles and interleave independent (m,n) tiles through the k loop — was run
+on `RpuGemm4X4DeepAccConfig` (`acc_size` 272 B = 17 rows = 1 + 4x4):
+
+| mode | execTime | mxActive | mxBubble | bubble% |
+|---|---|---|---|---|
+| serial (today) | 2883 | 291 | 2581 | 89.5% |
+| interleaved x2 | 2861 | 291 | 2561 | 89.5% |
+| interleaved x4 | 2850 | 291 | 2550 | 89.5% |
+
+**1.1%.** The accumulator-dependency hypothesis is refuted too — five for five.
+
+**What `mxActive` being identical every time was telling me.** The work never changed
+and the stall never changed, across every scheduling intervention. So the stall is not
+schedulable at all. Holding the *tile count* fixed at 2x2x4 and varying only the array
+size:
+
+| config | tile bytes | execTime | mxActive | bubble% | **cycles/DMA** |
+|---|---|---|---|---|---|
+| 4x4 | 32 | 2883 | 291 | 89.3% | **75.9** |
+| 8x8 | 128 | 2891 | 563 | 82.5% | **76.1** |
+| 16x16 | 512 | 2910 | 1047 | 67.7% | **76.6** |
+
+**Cycles per DMA is constant at ~76 across a 16x change in transfer size**, and total
+runtime barely moves (2883 → 2910) while the useful work quadruples twice
+(291 → 563 → 1047). The DMA cost is **fixed per transfer, independent of size**: pure
+latency, serialised, and unaffected by anything the kernel does.
+
+**Why the bubble falls anyway.** It is not that the stall shrinks — it is that the
+compute grows into it. 89.3% → 82.5% → 67.7% is `mxActive` rising against a constant
+DMA cost. Extrapolating the same trend, a 128x128 array moves 32 KB per tile and does
+~64x the work of 16x16 per transfer, so the transfer stops being the limiter entirely.
+
+**The conclusion that matters. This is not an architectural flaw; it is an artifact of
+tiny tiles on a small array.** The RPU targets 128x128 (`GOLDEN_MODEL_SPEC` §4/§5.2),
+where the same fixed latency is amortised over ~4000x more MACs per transfer than at
+4x4. Five scheduling interventions failed because there was nothing to schedule around —
+the fix is tile size, and the design already has it.
+
+**Consequence for D-128's warning, which stands but narrows.** Utilisation and J/block
+figures must not be quoted *from the small configs* — at 4x4 they measure a fixed
+transfer latency, not the machine. Figures from 128x128 would not have this problem, and
+the cycle model should carry `~76 cycles/transfer` as a measured constant rather than
+treating it as a stall to be optimised away.
