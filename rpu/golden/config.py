@@ -26,6 +26,32 @@ class Fp8Format(StrEnum):
     E5M2 = "e5m2"
 
 
+class ExpImpl(StrEnum):
+    """DECIDE-5, gate-1: the hardware `exp` approximation, bit-specified.
+
+    §5.3 is explicit that "the golden default is correctly-rounded FP32 `exp`; the
+    hardware approximation (LUT/poly, ExpMul-class) must be specified to the bit at
+    gate 1 and the golden model then switches to it". So this is a flag with a
+    spec-given default, not an open hole -- but the hardware variants cannot be
+    written until gate 1 names one, and asking for one raises.
+    """
+    FP32_CORRECTLY_ROUNDED = "fp32_exact"
+    HARDWARE_APPROX = "hw_approx"          # unavailable until gate 1 specifies it
+
+
+class SoftmaxVariant(StrEnum):
+    """§5.3: two microcode-selectable variants beside the default online softmax."""
+    ONLINE = "online"              # running max/sum over k-tiles, ascending
+    STATIC_MAX_BOUND = "static"    # (a) per-layer precomputed max, gate-1 accuracy check
+    FLASH_D = "flash_d"            # (b) division folded into sigmoid, Tier-2 candidate
+
+
+class ProbPrecision(StrEnum):
+    """DECIDE-6, gate-1: probability precision into pass 2."""
+    FP8 = "fp8"        # re-quantize P before A@V, the §5.3 baseline
+    FP16 = "fp16"      # keep FP16 through AV
+
+
 class TreeNodeRounding(StrEnum):
     """DECIDE-3, gate-1: exact tree vs FP32-rounded tree nodes.
 
@@ -49,9 +75,15 @@ class NumericConfig:
     tree_rounding: TreeNodeRounding = None  # DECIDE-3, gate-1
     weight_profile: WeightProfile = None    # §3 profile is a ucode field
 
+    # --- flags with a spec-given default; still named explicitly ---
+    exp_impl: ExpImpl = None                # DECIDE-5, gate-1
+    prob_precision: ProbPrecision = None    # DECIDE-6, gate-1
+    softmax: SoftmaxVariant = None          # §5.3 variant
+
     def __post_init__(self) -> None:
         missing = [n for n in ("activation_fp8", "tree_width", "tree_rounding",
-                               "weight_profile") if getattr(self, n) is None]
+                               "weight_profile", "exp_impl", "prob_precision",
+                               "softmax") if getattr(self, n) is None]
         if missing:
             raise ValueError(
                 "open DECIDE parameters must be set explicitly, never defaulted: "
@@ -77,4 +109,7 @@ def working_assumption() -> NumericConfig:
         tree_width=8,
         tree_rounding=TreeNodeRounding.EXACT,
         weight_profile=WeightProfile.MXFP4,
+        exp_impl=ExpImpl.FP32_CORRECTLY_ROUNDED,   # §5.3's stated golden default
+        prob_precision=ProbPrecision.FP8,          # §5.3 baseline
+        softmax=SoftmaxVariant.ONLINE,             # §5.3 default
     )

@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config import NumericConfig, TreeNodeRounding, working_assumption   # noqa: E402
+from config import (ExpImpl, NumericConfig, ProbPrecision,             # noqa: E402
+                    SoftmaxVariant, TreeNodeRounding, working_assumption)
 from reduce import dot, dot_linear_order                                 # noqa: E402
 
 FAILURES: list[str] = []
@@ -32,7 +33,9 @@ def test_open_decides_refused() -> None:
         check("constructing without DECIDEs raises", True)
     try:
         NumericConfig(activation_fp8="e4m3", tree_width=7,
-                      tree_rounding=TreeNodeRounding.EXACT, weight_profile="mxfp4")
+                      tree_rounding=TreeNodeRounding.EXACT, weight_profile="mxfp4",
+                      exp_impl=ExpImpl.FP32_CORRECTLY_ROUNDED,
+                      prob_precision=ProbPrecision.FP8, softmax=SoftmaxVariant.ONLINE)
         check("tree_width outside DECIDE-4's (4,8,16) raises", False)
     except ValueError:
         check("tree_width outside DECIDE-4's (4,8,16) raises", True)
@@ -79,9 +82,8 @@ def test_decide3_flag_is_real() -> None:
     """DECIDE-3: exact tree vs FP32-rounded nodes must be a real behavioural difference."""
     print("\nDECIDE-3 exact vs per-node-rounded tree")
     base = working_assumption()
-    rounded = NumericConfig(activation_fp8=base.activation_fp8, tree_width=base.tree_width,
-                            tree_rounding=TreeNodeRounding.ROUND_EACH_NODE,
-                            weight_profile=base.weight_profile)
+    from dataclasses import replace
+    rounded = replace(base, tree_rounding=TreeNodeRounding.ROUND_EACH_NODE)
     rng = np.random.default_rng(1)
     diff = 0
     for _ in range(200):

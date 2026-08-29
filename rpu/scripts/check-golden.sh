@@ -7,7 +7,7 @@ set -uo pipefail
 CY=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PY=${PY:-$HOME/rpu-simulation/reference/dit-venv/bin/python}
 fail=0
-for t in test_reduce test_formats; do
+for t in test_reduce test_formats test_datapath; do
   printf '\n== %s ==\n' "$t"
   "$PY" "$CY/rpu/golden/$t.py" || fail=1
 done

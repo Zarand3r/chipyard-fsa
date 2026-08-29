@@ -809,3 +809,54 @@ approximating it would have quietly contaminated every downstream comparison.
 blocks (§5), memory semantics (§6), L2 trace and L3 state conformance (§1), and the
 remaining §10 mutants. This is the reduction backbone and the configuration discipline
 only.
+
+---
+
+## D-118 — §5 datapath blocks; DECIDE-5/6 are flags with spec-given defaults, not blockers
+
+**Date:** 2026-08-28 · **Roadmap phase:** 3 · **Status:** adopted
+
+**Correcting my own reading.** I reported §5.3 as blocked on DECIDE-5 (hardware `exp`)
+and DECIDE-6 (probability precision). Re-reading it, the spec already settles the golden
+model's behaviour: *"the golden default is correctly-rounded FP32 `exp`; the hardware
+approximation (LUT/poly, ExpMul-class) must be specified to the bit at gate 1 and the
+golden model then switches to it."* DECIDE-5 and DECIDE-6 are flags with stated
+defaults, exactly like DECIDE-3/4 — not holes. §5.3 was never blocked.
+
+Selecting `ExpImpl.HARDWARE_APPROX` **raises**, deliberately: inventing an
+approximation to fill the gap would silently create the architectural commitment gate 1
+is supposed to make.
+
+**Implemented.** 5.1 dequant row, 5.2 matmul (FP8 operands, dequantized weights, FP32
+per §4, FP8 re-quantization at the tensor boundary, with the raw accumulator exposed for
+§9(c)), the 5.3 online-softmax streamer, 5.4 LayerNorm/GELU, and the 5.5 FLOP-share
+checksum. All arithmetic routes through `reduce.dot`, so reduction order lives in one
+place.
+
+**Two real bugs, caught by tests derived from the spec's own words.**
+
+1. *The online softmax rescaled the running sum but not the values already emitted.*
+   Probabilities summed to **2.368** instead of 1. §5.3 makes the recurrence order part
+   of the contract, so the sum-to-1 check is not decoration — it is the thing that
+   detects a wrong recurrence. Fixed by rescaling prior tiles by `exp(m_old - m_new)`
+   alongside the sum.
+2. §10's mutant — *"running max updated in descending tile order"* — is implemented
+   beside the real streamer and is confirmed detectable.
+
+**Fourth test-expectation bug of the session; the model was right again.** I asserted
+GELU is monotone. It is not: it dips below zero with a minimum near `x = -0.75`. The
+test now checks the actual shape — minimum location, monotone above it, `→ x` for large
+positive, `→ 0` for large negative. The running tally is worth stating plainly: four
+wrong hand-written expectations, zero wrong model behaviours, and the two suites that
+check against an **independent** reference (ml_dtypes for FP8, PyEasyFloat for the GEMM)
+produced none of them.
+
+**FLOP-share checksum.** §5.5 calls its shares "checksum for the model". Recomputing
+them from §2's contract shapes gives agreement within 0.82 points (worst:
+cross-attention 0.062 vs 0.070). The spec tags those shares `[S]` — simulated/derived —
+so this is a consistency check on the model's geometry, not a bit-exact claim, and it is
+recorded as such.
+
+**Still open in phase 3:** §5.3's two µcode variants (static max-bound, FLASH-D), §5.6
+update engine (blocked on DECIDE-10, the update-engine ISA doc, which does not exist),
+§6 memory semantics, §7 named state, §8 chunk execution, and L2/L3 conformance.
