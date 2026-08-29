@@ -1534,15 +1534,35 @@ the accumulator**. 4x4, 8x8 and 16x16 are all correct, so it is size-dependent.
   `2*rows` is correct on its own terms and is **kept** — but it does not fix 32x32, and
   4x4 still passes at rel 2.497e-08 after the change, so it is not a regression either.
 
-**Next experiment, concretely.** Run the D-113 diagnostic ladder at 32x32, in this
-order, because each step localises rather than judges:
-1. `B = I` — does the output equal a transform of `A`, or is it garbage everywhere?
-   That separates a dataflow/layout problem from uninitialised state.
-2. If garbage, map *which* rows/columns are bad and whether they move with the seed
-   (D-113's method), which distinguishes a stuck pipeline stage from a capacity limit.
-3. Check `spadBanks`/`accBanks` (both default 2) and `nMemPorts = 8` at 32x32 against
-   4x4's 4 — the banked SRAM's `nSubBanks = rowSize * elemWidth / 8 / beatBytes` has a
-   `require` that could interact with the wider rows.
+**The ladder was run. Results, and ownership.**
+
+1. *`B = I` at 32x32:* 257 of 1024 elements garbage, **all 32 rows** affected but only
+   **16 of 32 columns**, at `[0, 1, 4, 8, 12, 13, 16, 17, 18, 20, 21, 22, 23, 24, 28,
+   29]`. Column-structured, which is the *opposite* of D-113's row/drain-step signature.
+2. *Data dependence:* the bad column set is **identical** across data seeds. Structural,
+   not numeric. 16x16 under the same probe is exact (rel 0.0).
+3. *Capacity:* not the cause. At 32x32 the kernel uses 128 of 192 scratchpad rows and
+   32 of 33 accumulator rows. ISA address fields are 20 bits against 8 and 6 needed.
+4. **Ownership: ours.** `main.py --seq_q 32 --seq_kv 32` — upstream's own kernel and
+   plans on this exact config — **passes**, with FSA matching PyEasyFloat to every
+   printed digit. The 32x32 configuration is sound. The defect is in our GEMM path.
+5. *Is `PROP_ZERO` simply an insufficient substitute for `ATTN_SCORE`'s priming?*
+   Partly. Issuing a real `ATTN_SCORE` before `ATTN_VALUE` at 32x32 cuts the corruption
+   from 467 to 118 elements of 1024 — **but does not eliminate it**, so priming is not
+   the whole story either.
+
+**Where that leaves it.** A defect that is ours, structural, column-indexed,
+size-dependent, and survives both `PROP_ZERO` and real `ATTN_SCORE` priming. Every cheap
+discriminator is now spent. The next step is the one this program has repeatedly avoided
+and has now clearly earned: **a waveform**. `make debug CONFIG=RpuGemm32X32Fp16Config`
+then `main.py --vcdfile`, per FSA issue #9, watching `accumulator.io.sa_in` and
+`accRAM.fullWrite` for the bad columns during the drain window. That distinguishes
+"garbage arrives from the array" from "the write lands wrong" in one look, which no
+amount of black-box probing has managed.
+
+**Not blocking.** 4x4, 8x8 and 16x16 are verified bit-exact and carry every result the
+program depends on, including D-131's trend. 32x32 is a capability gap, not a
+regression.
 
 **Consequence.** Gate B's multi-config claim now covers 4x4, 8x8 and 16x16 only.
 `gate-b.sh` should not be extended to 32x32 until this is resolved, and no number from
