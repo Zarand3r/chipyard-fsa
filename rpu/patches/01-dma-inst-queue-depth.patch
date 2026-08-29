@@ -1,0 +1,13 @@
+diff --git a/src/main/scala/fsa/AXI4FSA.scala b/src/main/scala/fsa/AXI4FSA.scala
+index 2ac0450..02fa90f 100644
+--- a/src/main/scala/fsa/AXI4FSA.scala
++++ b/src/main/scala/fsa/AXI4FSA.scala
+@@ -131,7 +131,7 @@ class AXI4FSA[E <: Data : Arithmetic, A <: Data : Arithmetic](val ev: Arithmetic
+ 
+     val mxInst = Queue(decoder.io.outMx, entries = fsaParams.mxInflight, pipe = true)
+     // DMA has its own load/store queues inside it
+-    val dmaInst = Queue(decoder.io.outDMA, pipe = true)
++    val dmaInst = Queue(decoder.io.outDMA, entries = fsaParams.dmaLoadInflight, pipe = true)
+ 
+     val dmaDone = RegNext(!(dma.module.io.busy || dmaInst.valid), init = false.B)
+     val mxDone = RegNext(!(fsa.io.busy || mxInst.valid), init = false.B)

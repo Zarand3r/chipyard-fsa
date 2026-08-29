@@ -1391,3 +1391,59 @@ utilisation or J/block figure from this design is worth quoting (D-128).
 
 **Kept, not reverted.** The pipelined kernel is neutral at distance 1 and is the correct
 structure for a deeper prefetch, so it stays with this measurement recorded beside it.
+
+---
+
+## D-130 — Four stall hypotheses refuted; the evidence points at accumulator capacity
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** open, with a named experiment
+
+**The measurement that will not move.** D-128 found `mxBubble` at 56-88% of runtime.
+Four independent interventions, each targeting a plausible cause, changed **nothing**:
+
+| # | intervention | result |
+|---|---|---|
+| 1 | remove `waitPrevAcc` (full serialisation) | execTime 870 → 870, bubble 712 → 712 |
+| 2 | software-pipeline the k loop, prefetch distance 1 | 562/870/1651 → identical, to the cycle |
+| 3 | **4x the scratchpad** (`spadRows` 24 → 96), prefetch depths 2, 3, 4, 6, 8 | 1486 at *every* depth, bubble 1289 at every depth |
+| 4 | **deepen the DMA instruction queue** 2 → 16 (`rpu/patches/01`) | 1486 at every depth, unchanged |
+
+Intervention 4 was worth doing on its own evidence: `dmaInst = Queue(decoder.io.outDMA,
+pipe = true)` takes Chisel's **default of 2 entries** while `mxInst` gets
+`mxInflight = 8`, and the decoder is a single in-order splitter, so a full DMA queue
+stalls everything behind it. That asymmetry is real. It is simply not the bottleneck.
+
+**What perfect insensitivity means.** A stall that ignores buffering, queue depth, issue
+order and serialisation flags is not a *resource* stall. It is a **dependency** stall.
+
+**The hypothesis the evidence now supports.** The k loop is a strict serial chain
+through a single accumulator tile: each GEMM reads `c_acc`, accumulates, and writes it
+back, so the next k-tile has a read-after-write dependency on the previous one. No
+amount of prefetched *data* helps, because the *compute* cannot start early. The
+arithmetic confirms the shape: `mxActive = 155` over 8 k-tiles is ~19 cycles of work per
+tile against ~186 cycles elapsed — ~167 cycles per tile spent waiting on the accumulator
+round trip.
+
+`accRows = 1 + rows` holds exactly **one** output tile plus the log-exp-sum row. There is
+no second accumulator to put independent work in.
+
+**This is Gate B claim 5, third time and now precisely.** The feasibility note predicted
+"the scratchpad and accumulator sizing is the part that actually costs time". D-129
+attributed it to scratchpad depth and was wrong — intervention 3 refutes that directly.
+The cost is in the **accumulator**, and it is not capacity for correctness or for
+prefetch, but capacity for **independent work**.
+
+**The experiment that would settle it.** Raise `accRows` to hold `A` output tiles, and
+restructure the kernel to interleave `A` independent (m,n) output tiles through the k
+loop, so tile *j*'s accumulate overlaps tile *j+1*'s compute. If `mxBubble` falls, the
+dependency hypothesis is confirmed and the design lever is accumulator capacity. If it
+does not, the stall is in the accumulator's own latency and no scheduling fixes it.
+
+Until that runs, **no utilisation or J/block figure from this design should be quoted**
+(D-128): at 87% bubble they would be measuring a dependency stall, not the machine.
+
+**Patch handling.** `rpu/patches/` now exists with apply/revert scripts, so a submodule
+change can be tested without the untracked-edit problem D-106 forbids. Patch 01 is
+**kept as a file and reverted in the tree**, since carrying an applied change that
+demonstrably buys nothing is exactly the kind of unjustified complexity that later reads
+as intentional.

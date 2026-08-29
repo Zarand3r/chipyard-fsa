@@ -140,6 +140,21 @@ object RpuConfigs {
     * This matters for roadmap phase 8 ("FP8 attention, FP4 linear compute"), which
     * assumed a datapath addition. See rpu/DECISIONS.md D-122.
     */
+  /** Deep-scratchpad variants, for the D-129 experiment.
+    *
+    * `defaultFSAParams` sizes `spadRows = 2*cols + 4*rows` -- 24 rows at 4x4, which is
+    * exactly six 4-row tiles for BOTH operands together. D-129 measured that the GEMM
+    * stalls ~66 cycles per DMA and that hiding it needs a prefetch distance of about 6
+    * iterations, i.e. 6+ buffers per operand. The scratchpad cannot hold them.
+    *
+    * These raise `spadRows` so the prefetch depth can actually be varied, which turns
+    * "the scratchpad is the bottleneck" from an inference into a measurement.
+    */
+  def withDeepSpad(base: FSAParams, factor: Int): FSAParams =
+    base.copy(spadRows = base.spadRows * factor)
+
+  lazy val gemm4x4deep  = withDeepSpad(withGemm(Configs.fsa4x4), 4)   // 24 -> 96 rows
+
   lazy val e4m3MulFp32Add = new FPArithmeticImpl(4, 3, 8, 23)
   lazy val e5m2MulFp32Add = new FPArithmeticImpl(5, 2, 8, 23)
 }

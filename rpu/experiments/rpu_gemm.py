@@ -49,7 +49,8 @@ GEMM_FUNC = 5          # must match RpuMxFunc.GEMM in rpu/GemmExecPlan.scala
 SET_ACC_SCALE_FUNC = 6 # must match RpuMxFunc.SET_ACC_SCALE
 
 
-WAIT_PREV_ACC = True   # see D-129; set False to let k-tile DMAs prefetch
+WAIT_PREV_ACC = True   # see D-129; measured neutral
+PREFETCH_DEPTH = 2     # buffers per operand. D-129: depth 2 hides ~12 of ~66 cycles.
 
 
 def mx_gemm(func: int, b_t: STile, c_t: ATile, accumulate: bool, sem, aq=True, rl=True) -> None:
@@ -150,14 +151,17 @@ def build_kernel(func: int, shape: Shape):
     def gemm(A_tiles: list[MTile], B_tiles: list[MTile],
              ones_a: MTile, ones_b: MTile) -> list[MTile]:
         c_out = [F.alloc_mem((s.rows, s.cols), F.fp32) for _ in range(s.mt * s.nt)]
-        a_buf = [F.alloc_spad((s.cols, s.rows)) for _ in range(2)]
-        b_buf = [F.alloc_spad((s.rows, s.rows)) for _ in range(2)]
+        depth = max(2, PREFETCH_DEPTH)
+        a_buf = [F.alloc_spad((s.cols, s.rows)) for _ in range(depth)]
+        b_buf = [F.alloc_spad((s.rows, s.rows)) for _ in range(depth)]
         c_acc = F.alloc_accumulator((s.rows, s.cols))
 
-        sem_a = [F.Semaphore(id=0, n=2), F.Semaphore(id=1, n=2)]
-        sem_b = [F.Semaphore(id=2, n=2), F.Semaphore(id=3, n=2)]
-        sem_c = F.Semaphore(id=4, n=2)
-        sem_s = F.Semaphore(id=5, n=2)
+        # Semaphore ids are 5 bits (0..31); two per buffer plus store and scale.
+        assert 2 * depth + 2 <= 32, f"prefetch depth {depth} needs too many semaphores"
+        sem_a = [F.Semaphore(id=i, n=2) for i in range(depth)]
+        sem_b = [F.Semaphore(id=depth + i, n=2) for i in range(depth)]
+        sem_c = F.Semaphore(id=2 * depth, n=2)
+        sem_s = F.Semaphore(id=2 * depth + 1, n=2)
 
         # Prime the accumulator scale to exactly 1.0, once. `scale` is a register and
         # nothing below writes it, so one prologue covers every tile.
@@ -183,14 +187,20 @@ def build_kernel(func: int, shape: Shape):
                 # buffering the tiles does nothing on its own -- the *issue order* is
                 # what has to change. Loads for k+1 are issued before the MX ops for k,
                 # so a transfer overlaps a compute.
-                if s.kt:
-                    F.load_tile(A_tiles[mi * s.kt], a_buf[0], sem_a[0])
-                    F.load_tile(B_tiles[ni], b_buf[0], sem_b[0])
+                # Prologue: fill the pipeline `depth-1` deep before the first MX op,
+                # so a DMA has `depth-1` iterations of compute to hide behind.
+                for pre in range(min(depth - 1, s.kt)):
+                    F.load_tile(A_tiles[mi * s.kt + pre], a_buf[pre % depth],
+                                sem_a[pre % depth])
+                    F.load_tile(B_tiles[pre * s.nt + ni], b_buf[pre % depth],
+                                sem_b[pre % depth])
                 for ki in range(s.kt):
-                    buf, nxt = ki % 2, (ki + 1) % 2
-                    if ki + 1 < s.kt:
-                        F.load_tile(A_tiles[mi * s.kt + ki + 1], a_buf[nxt], sem_a[nxt])
-                        F.load_tile(B_tiles[(ki + 1) * s.nt + ni], b_buf[nxt], sem_b[nxt])
+                    buf = ki % depth
+                    ahead = ki + depth - 1
+                    if ahead < s.kt:
+                        nxt = ahead % depth
+                        F.load_tile(A_tiles[mi * s.kt + ahead], a_buf[nxt], sem_a[nxt])
+                        F.load_tile(B_tiles[ahead * s.nt + ni], b_buf[nxt], sem_b[nxt])
                     F.mx_load_stationary(a_buf[buf], sem_a[buf])
                     mx_gemm(func, b_buf[buf], c_acc, ki > 0, sem_b[buf])
                 # Drain the matrix engine before reading the accumulator out.
