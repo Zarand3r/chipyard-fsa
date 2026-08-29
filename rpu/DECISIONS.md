@@ -631,3 +631,83 @@ cost.
 
 **Keep / revert.** Keep. Drop a rule only by deleting the incident that justifies it,
 which is not something that happens.
+
+---
+
+## D-115 — Real DiT GEMMs run on the array; three of seven shapes do not tile
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** adopted
+
+**Result.** `rpu/experiments/dit_gemm_test.py` runs the phase-1 GEMM cases — operands
+taken from the frozen DiT-XL/2 trace, not from a random generator — on the array. The
+tileable cases pass at their **full contraction depth**:
+
+| case | slice run | k-tiles | rel err | tol |
+|---|---|---|---|---|
+| `qkv_proj` | `[48x1152]@[1152x16]` | 72 | 4.07e-05 | 2.5e-03 |
+| `attn_out_proj` | `[48x1152]@[1152x16]` | 72 | 1.03e-05 | 2.5e-03 |
+| `mlp_fc1` | `[48x1152]@[1152x16]` | 72 | 6.12e-06 | 2.5e-03 |
+| `mlp_fc2` | `[16x4096]@[4096x16]` | 256 | 1.18e-05 | 4.8e-03 |
+
+`K` is the **complete** dimension of the real GEMM in the first three; only `M` and `N`
+are sliced, because full size is 83k-332k stationary loads and that is not a Verilator
+workload. Every reported number carries its slice (D-114 rule 1).
+
+**Three shapes do not tile, and the reasons are structural, not harness limits.**
+
+| case | shape | why |
+|---|---|---|
+| `attn_scores_h0` | `[256x72]@[72x256]` | `K = 72` is not a multiple of `rows = 16` |
+| `attn_ctx_h0` | `[256x256]@[256x72]` | `N = 72` is not a multiple of `rows = 16` |
+| `adaln` | `[1x1152]@[1152x6912]` | `M = 1` is not a multiple of `cols = 16` |
+
+The first two are **D-104 arriving on schedule**. DiT-XL/2 has `d_head = 1152/16 = 72`,
+FSA binds the head dimension to the array's row count, and 72 does not tile onto 16.
+D-104 deferred this as a phase-2/4 mapping decision and flagged that it must not go
+quiet; it has not.
+
+**And the sweep sharpened it into an arithmetic fact.** At `RpuGemm8X8Fp16Config`,
+**six of seven cases tile**, including both per-head attention GEMMs — because
+`72 = 9 x 8`. `attn_scores_h0` runs `[224x72]@[72x8]`, 9 k-tiles, rel 1.44e-05;
+`attn_ctx_h0` runs `[64x256]@[256x8]`, rel 8.93e-07.
+
+`72 = 2^3 x 3^2`, so its divisors are {1,2,3,4,6,8,9,12,18,24,36,72}. **No power of two
+above 8 divides it.** That is the whole difficulty in one line:
+
+| array rows | `d_head = 72` |
+|---|---|
+| 4, 8 | tiles exactly |
+| 16, 32, 64, **128** | does not tile |
+
+The RPU targets `d_head = 128` on a 128x128 array (`GOLDEN_MODEL_SPEC` §2), so the
+bring-up workload and the target machine disagree in a way no array size resolves for
+both. The options are now concrete rather than vague: run bring-up attention on an
+8-row array (exact, but a small array whose utilisation numbers do not transfer); pad
+72 -> 128 and quote the masked fraction with every derived number; or tile 72 as 64 + 8.
+The non-attention GEMMs are unaffected — they carry no `d_head` — so this constrains
+phases 4 and 5, not phase 2.
+
+**`adaln` fails on every array size** (`M = 1` vs `cols`), which is a scheduling problem
+rather than a geometry one: batch the conditioning across the CFG pair, or accept a
+`cols`-times-underutilised pass. The third is different in kind: `adaln`'s `M = 1` is a *batch* of one
+conditioning vector, and a systolic array wants `M = cols` rows of work. That is a
+scheduling question (batch the conditioning across the CFG pair, or accept a
+`cols`-times-underutilised pass), not an arithmetic one.
+
+**A defect in the test, caught and fixed before it flattered us.** The first version grew
+the slice along M then N and always ended at `kt == 1`, so it never exercised
+k-accumulation — the exact path D-111's stale accumulator scale lived on. A slice that
+skips the interesting axis is not a test of that axis. It now grows K first and asserts
+`kt > 1`.
+
+**Seed independence.** Every case was run at `$random` seeds 1, 7 and 12345 (D-114
+rule 2) at both 8x8 and 16x16. Rel err is **identical to every digit** across seeds, so
+these results do not depend on power-on state.
+
+**Tolerance caveat, stated rather than buried.** The reference is a float32 numpy
+matmul, and the tolerance `max(1e-3, 3e-4 * sqrt(k/rows))` is a plausible envelope, not
+a derived bound — it is loose by roughly two orders of magnitude against the observed
+errors. The rigorous comparison is against **PyEasyFloat**, FSA's own bit-accurate model,
+which is what upstream checks against and what makes the RTL ↔ golden leg bit-exact
+rather than approximate. Wiring that in is the right next hardening step and is not yet
+done.
