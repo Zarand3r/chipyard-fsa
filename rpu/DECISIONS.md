@@ -961,3 +961,55 @@ I skipped first.
 **Remaining for phase 4:** GELU on the array. Unlike the others it is genuinely
 elementwise-nonlinear, and FSA's `exp2` path in the PE is the natural vehicle — subject
 to the `exp2Done` ordering constraint measured in D-119.
+
+---
+
+## D-121 — GELU: costed, bounded, and deliberately not decided
+
+**Date:** 2026-08-29 · **Roadmap phase:** 4 · **Status:** study delivered; gate-1 decision left open
+
+**Cost, first.** Applying D-119's lesson before choosing a mechanism: GELU is
+`M x C_ff` elementwise operations, which is **0.0258% of block MACs at DiT-XL/2 and
+0.0030% at RPU contract shapes**. Whatever mapping wins, GELU's compute is negligible.
+The question is feasibility and precision, not throughput.
+
+**Mechanism.** FSA already evaluates `exp2` as a piecewise-linear function *inside the
+MAC* — `exp2PwlIntercepts` / `exp2PwlSlopes`, selected by the comparator's
+`PROP_EXP2_INTERCEPTS` and latched by `PE.exp2Done`. tanh, and therefore tanh-GELU, is
+reachable from that path plus the accumulator's `RECIPROCAL`. So the capability exists;
+what does not exist is a specified piece count.
+
+**Why I did not pick one.** `GOLDEN_MODEL_SPEC` DECIDE-5 requires the hardware
+approximation be "specified to the bit at gate 1". Choosing a piece count here would be
+precisely the silent architectural commitment `config.py` refuses everywhere else.
+`datapath.py` already raises on `ExpImpl.HARDWARE_APPROX` for the same reason.
+
+**What I produced instead: the study the decision should be made against.**
+`rpu/golden/gelu_study.py`, measured on the **real activation distribution from the
+phase-1 trace** (1,179,648 values from `mlp_fc1_out`, range [-10.528, 5.316],
+p99.9 = 2.121) rather than a uniform grid:
+
+| PWL pieces | max rel err | vs FP8 E4M3 half-ulp (3.125e-02) |
+|---|---|---|
+| 4 | 3.198e-02 | above |
+| 8 | 2.888e-02 | below |
+| 16 | 1.419e-02 | below |
+| 32 | 4.363e-03 | below |
+| 64 | 1.151e-03 | far below |
+| 128 | 2.918e-04 | far below |
+
+**The finding that bounds the choice.** §3 re-quantizes vector-op outputs to FP8 at the
+tensor boundary, and E4M3 carries three explicit mantissa bits, so a half-ulp is
+`2⁻⁵ = 3.1e-02` relative. **Piece counts past ~16 buy accuracy the FP8 boundary
+immediately discards.** 8 pieces already sits under FP8 noise; 16 gives roughly 2x
+margin. Anything beyond that is paying area and latency for bits that are rounded away
+one operation later.
+
+That bounds the decision to a narrow range without making it. The golden's own fp32
+tanh-GELU is accurate to 2.365e-07 against a float64 reference, so it remains the
+reference the hardware form will be checked against.
+
+**Phase 4 status.** Modulation and the gated residual: mapped and measured (D-120).
+LayerNorm: free, native contractions (D-120). GELU: costed, mechanism identified,
+precision bounded, awaiting gate 1. The RTL for GELU is the one piece of phase 4 that
+should not be written yet.
