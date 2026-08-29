@@ -760,3 +760,52 @@ RTL. `GOLDEN_MODEL_SPEC` §3 and §4 specify precisely these properties for the 
 **Kept, not replaced.** The tolerance path remains the default because the bit-exact
 golden is a scalar FMA per MAC and too slow for large shapes. `--bitexact` is the
 stronger claim; the tolerance path is the fast screen.
+
+---
+
+## D-117 — Phase 3 started: §4's reduction backbone, with open DECIDEs made unfakeable
+
+**Date:** 2026-08-28 · **Roadmap phase:** 3 · **Status:** in progress
+
+**What exists.** `rpu/golden/` now implements the part of `GOLDEN_MODEL_SPEC` the spec
+itself calls "the bit-exactness backbone":
+
+- `config.py` — one configuration object. Every §11 open decision (**DECIDE-1**
+  activation FP8 flavour, **DECIDE-3** exact vs per-node-rounded tree, **DECIDE-4** tree
+  width) has **no default**; constructing a config without naming it raises. The spec
+  says open parameters are "marked DECIDE with its owning gate, never silently
+  invented", and this makes that mechanical rather than aspirational. A separate
+  `working_assumption()` returns the spec's own stated placeholders, labelled as such.
+- `reduce.py` — §4 in full: k-blocks of 128, a fixed `tree_width`-input adder tree in
+  ascending k evaluated exactly, tree outputs accumulated into FP32 in ascending order
+  with one RNE add each, independent per-output accumulators. Plus `dot_linear_order`,
+  the §10 must-fail mutant, kept deliberately *in the same file* as the thing it mutates.
+- `test_reduce.py` — 15 checks, all passing.
+
+**A real correctness problem found and fixed in the process.** The first `_rne_f32` took
+the obvious shortcut, `np.float32(float(fraction))`, and asserted the exact value was
+representable in float64 first. **That assert fires on ordinary random vectors**: an
+8-product tree with a realistic exponent spread routinely needs more than 53 bits, and
+the shortcut double-rounds. It is now a direct Fraction → float32 round-to-nearest-even
+— binade search, quantum exponent with the denormal floor at 2⁻¹⁴⁹, ties-to-even,
+overflow to infinity — verified against numpy on 500 float64-exact values, on 1/3, on
+both exact ties at 2²⁴, on the smallest denormal, and on overflow.
+
+§3 asks for "round-to-nearest-even at every format boundary". This is that boundary, and
+approximating it would have quietly contaminated every downstream comparison.
+
+**Two of my own tests were wrong, and the model was right both times.**
+
+1. The tree test expected `2²⁴ + 7 = 16777223`. That is not representable in float32
+   (the ulp at 2²⁴ is 2), so RNE gives 16777224 — which is what the model produced.
+2. The accumulation-order test used random vectors, failed to distinguish forward from
+   reversed order, and therefore asserted nothing. Replaced with a known-answer
+   construction (PARANOIA rule 3): one group of 2²⁴ and fifteen groups of 1. Forward,
+   each `2²⁴ + 1` is an exact tie and RNE swallows it → 2²⁴. Reversed, the ones
+   accumulate to 15 first → 2²⁴ + 16. Order is now *demonstrated* load-bearing rather
+   than asserted.
+
+**Explicitly not done.** MXFP4/NVFP4 dequant and the FP8 formats (§3), the datapath
+blocks (§5), memory semantics (§6), L2 trace and L3 state conformance (§1), and the
+remaining §10 mutants. This is the reduction backbone and the configuration discipline
+only.
