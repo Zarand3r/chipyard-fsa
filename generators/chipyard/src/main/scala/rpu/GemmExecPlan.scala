@@ -121,5 +121,8 @@ object RpuConfigs {
   lazy val gemm4x4     = withGemm(Configs.fsa4x4)
   lazy val gemm8x8     = withGemm(Configs.fsa8x8)
   lazy val gemm16x16   = withGemm(Configs.fsa16x16)
+  // Same array, 4 memory ports instead of 8. Diagnostic for the corrupted output rows
+  // at 16x16, which land at row index == 3 (mod 8) -- see DECISIONS.md D-112.
+  lazy val gemm16x16p4 = withGemm(Configs.defaultFSAParams(16, 16, 4))
   lazy val gemm128x128 = withGemm(Configs.fsa128x128)
 }

@@ -161,11 +161,12 @@ def build_kernel(func: int, shape: Shape):
         # all-ones, then read back by SET_SCALE. Using `c_acc` rather than a dedicated
         # row matters: accRows is 1 + rows, which does not fit two (rows, cols) tiles.
         # The first real k-tile below sets zero=True and overwrites it.
-        F.load_tile(ones_a, a_buf[0], sem_a[0])
-        F.mx_load_stationary(a_buf[0], sem_a[0])
-        F.load_tile(ones_b, b_buf[0], sem_b[0])
-        mx_gemm(func, b_buf[0], c_acc, False, sem_b[0])
-        mx_set_acc_scale(c_acc, sem_s)
+        if s.kt > 1:
+            F.load_tile(ones_a, a_buf[0], sem_a[0])
+            F.mx_load_stationary(a_buf[0], sem_a[0])
+            F.load_tile(ones_b, b_buf[0], sem_b[0])
+            mx_gemm(func, b_buf[0], c_acc, False, sem_b[0])
+            mx_set_acc_scale(c_acc, sem_s)
 
         for mi in range(s.mt):
             for ni in range(s.nt):
@@ -177,6 +178,17 @@ def build_kernel(func: int, shape: Shape):
                     F.mx_load_stationary(a_buf[buf], sem_a[buf])
                     F.load_tile(b_mem, b_buf[buf], sem_b[buf])
                     mx_gemm(func, b_buf[buf], c_acc, ki > 0, sem_b[buf])
+                # Drain the matrix engine before reading the accumulator out.
+                #
+                # A matrix instruction carries ONE semaphore, and mx_gemm spends it on
+                # its scratchpad dependency, so there is no semaphore left to order the
+                # store against the accumulation. Without this fence the DMA races the
+                # writeback: at 4x4 it happened to land late enough and every case
+                # passed, at 16x16 the readout contained ~1e14 garbage in scattered
+                # elements. Upstream never needs it because AttentionLseNorm is a
+                # blocking instruction that sits between the last ATTN_VALUE and the
+                # store, acting as the barrier.
+                F.fence(mx=True, dma=False, stop=False)
                 F.store_tile(c_acc, c_out[mi * s.nt + ni], sem_c)
         F.fence(mx=True, dma=True, stop=True)
         return c_out

@@ -482,3 +482,95 @@ comparison is one flag away.
 unreset register whose meaning is attention-specific. Phase 8's weight-streaming and
 FP4/FP8 work will touch the same path, and the same question — *what is `scale` when I
 arrive?* — should be asked there rather than rediscovered.
+
+---
+
+## D-112 — `GemmExecPlan` is cycle-identical to `ATTN_VALUE` and should be deleted
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** adopted, pending removal
+
+**Measurement.** `rpu/experiments/gemm_cycles.py`, `RpuGemm4X4Fp16Config`:
+
+| shape | ATTN_VALUE | GemmExecPlan | delta |
+|---|---|---|---|
+| single tile | 397 | 397 | 0 |
+| k x4 | 859 | 859 | 0 |
+| m x n x k | 1607 | 1607 | 0 |
+
+`mxActive`, `mxBubble` and `mxInst` are identical too, and correctness is identical
+(D-110). D-110 required the plan to justify itself on measurements. It cannot.
+
+**Why this was predictable, and why the prediction was still worth testing.** In
+hindsight it could not have been otherwise: `GemmExecPlan` was *built from*
+`AttentionValueExecPlan`'s declarations plus one comparator command, and the
+online-softmax machinery everyone assumed it was dropping lives in `ATTN_SCORE`, not in
+`ATTN_VALUE`. The "dropping the softmax declarations is plausibly cheaper" hypothesis
+was inherited from the same misreading D-110 retracted. Measuring cost one script and
+closed it; reasoning about it had already produced two wrong answers.
+
+The `PROP_ZERO` comparator command it adds also turned out to be unnecessary --
+`ATTN_VALUE` is correct without it, because what actually mattered was the accumulator
+scale (D-111), not the comparator.
+
+**Decision.** Remove `GemmExecPlan` and `RpuMxFunc.GEMM`. **Keep `SetAccScale` and
+`RpuMxFunc.SET_ACC_SCALE`** — that instruction is genuinely required and has no
+upstream equivalent. Keep the `RpuGemm*Config` names: they remain the configs that can
+run a GEMM, now by virtue of `SetAccScale` alone.
+
+**Not yet executed.** The removal is deferred until D-113's defect is resolved, because
+running both function codes is currently useful evidence that a failure is in the
+harness rather than in one plan.
+
+---
+
+## D-113 — **OPEN DEFECT.** Tiled GEMM corrupts two output rows at 16x16
+
+**Date:** 2026-08-28 · **Roadmap phase:** 2 · **Status:** open, blocks Gate B
+
+**Correction to an earlier claim.** Gate B was reported as "7/7 cases PASSED". That was
+measured only at `RpuGemm4X4Fp16Config`. **At `RpuGemm16X16Fp16Config` all seven cases
+fail.** The earlier statement should have been scoped to the array size it was measured
+on; it was not, and this entry is the correction.
+
+**Symptom.** `rpu/experiments/layout_probe.py` at 16x16, with `B = I` so the output is
+purely a transform of `A`:
+
+- 32 of 256 elements are garbage (|x| ~ 1e14), and they are exactly **two full rows**.
+- The rows are **3 and 11** — index ≡ 3 (mod 8) — and they are the same rows for seeds
+  0, 1 and 2, so this is **structural, not data-dependent**.
+- Every non-garbage element matches `rev_both(A)`, so the operand layout convention
+  established in D-110 is **correct at this size too**; nothing about the mapping is
+  wrong.
+
+**Ruled out.**
+
+- *Layout.* The good elements match, and no whole-matrix transform explains the rest.
+- *A race between the accumulation and the readout.* Adding a full `mx` fence before
+  `store_tile` changed nothing, and the error values are bit-identical run to run.
+- *The scale priming.* Skipping it entirely when `kt == 1` leaves single-tile failing.
+- *The config being unsound.* Upstream `main.py --seq_q 16 --seq_kv 16` passes on this
+  exact config, matching PyEasyFloat.
+
+**Memory-port hypothesis: tested and REFUTED.** `Configs.fsa16x16` sets `nMemPorts = 8`
+where `fsa4x4` sets 4, and the corrupted rows were exactly those with index ≡ 3 (mod 8),
+which looked conclusive. A 4-port 16x16 config was built to test it
+(`RpuGemm16X16P4Fp16Config`). The corruption does not go away and does not become a
+mod-4 pattern — it moves to rows **7, 11 and 12**, i.e. *three* rows instead of two, with
+no clean period. Memory ports change the symptom without explaining it, so the fault is
+elsewhere. The 4-port config is kept; it is cheap and it is now a second data point.
+
+**What is still known.** The corruption is whole-rows, structural, reproducible across
+seeds, and confined to the output while every surviving element matches `rev_both(A)`.
+A whole corrupted *output* row is what a corrupted *stationary* row would produce, so
+the A-tile load path is the next thing to instrument — specifically whether every row of
+the stationary tile actually lands in the scratchpad before `LOAD_STATIONARY` consumes
+it. Note also that the good elements match at rel ~4e-4 rather than the ~1e-8 seen at
+4x4, even though `A @ I` with an fp32 accumulator should be exact; that discrepancy is
+probably the same fault seen at lower amplitude and should not be dismissed as fp16
+noise.
+
+
+**Consequence.** Gate B is **not closed**, at any size. A gate that passes on the
+smallest configuration and fails on the next one up has not demonstrated the property it
+exists to demonstrate. The 4x4 results remain valid as far as they go and are not
+evidence about the array in general.
