@@ -2017,3 +2017,54 @@ readback and the 16-of-32-column pattern should map onto the DMA's beat structur
 were built on, using the tool that was named and then deferred twice. That is real
 narrowing, not a repeated approach — but the defect remains open and 32x32 is still
 gating 128x128 and the MXFP4 work behind it.
+
+---
+
+## D-142 — Accumulator exonerated by exhaustive scan; and a judgement call to stop
+
+**Date:** 2026-08-29 · **Roadmap phase:** 9 · **Status:** open, deprioritised deliberately
+
+**Exhaustive, not sampled.** D-141 inspected 12 of 135 transitions on one column. This
+scanned **all 64 exponent signals** (`io_sa_in_[0..31]_exp`, `io_sram_out_[0..31]_exp`)
+across the entire VCD for `exp == 255`, the fp32 inf/NaN encoding:
+
+| window | result |
+|---|---|
+| whole trace | 21 signals hold inf/NaN — all **first at t = 0** |
+| during the drain (`t >= 3455000`) | **none, in any column** |
+
+Every non-finite value is power-on state, flushed before the drain begins. The
+accumulator neither receives nor emits a non-finite value while it is doing the work.
+Combined with D-141's `scale = 1.0` and correct `ACC_SA` arithmetic, **the accumulator
+is fully exonerated** — the host reads `inf` from a datapath that never produced one.
+
+**Readback path field widths checked, and adequate.** `DMA_SIZE_BITS = 10` holds the
+128-byte row at 32x32 (64 at 16x16); `SRAM_STRIDE_BITS = 5` signed, and the actual tile
+strides are 1; `SRAM_MAX_ADDR_BITS = 20` against 8 needed. The 20-bit split memory
+stride carries 128 comfortably. No field overflows at 32x32.
+
+**So the defect is somewhere in `store_tile` → DMA → memory dump → `to_numpy` that is
+not a field-width limit, and I am stopping here.**
+
+**The judgement call, and its reasoning.** This defect has consumed four review cycles.
+Against that:
+
+- It affects **one configuration**. 4x4, 8x8 and 16x16 are verified bit-exact and carry
+  every result the program has claimed.
+- The remaining high-value non-hardware work — **MXFP4 block scaling** and **OCP
+  subnormal handling**, both required by §3 and both real RTL — can be developed and
+  verified entirely at 16x16, where the substrate is trustworthy.
+- 32x32 was being treated as gating 128x128, but that reasoning is weaker than it
+  looked: the defect appeared *between* 16 and 32, and its column-structured signature
+  points at the readback, not at anything the RPU's own 128x128 geometry depends on.
+
+Continuing to chase it would be the more comfortable choice — it is a well-defined
+puzzle — and the wrong one, because it is blocking two features the spec actually
+requires on one configuration nothing depends on.
+
+**Left in a state someone can resume.** The VCD is reproducible in ~3 minutes
+(`make debug CONFIG=RpuGemm32X32Fp16Config`), the parser is in this entry's history, and
+the next step is narrow: instrument `accRAM.fullWrite.addr` and the DMA's read of it, and
+check whether the 16-of-32 corrupted columns map onto the DMA beat structure. Everything
+upstream of the store is now known-good, which is a much better starting point than four
+cycles ago.
